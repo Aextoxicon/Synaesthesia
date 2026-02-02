@@ -1,0 +1,103 @@
+name: build for mac
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.35.4"
+
+      - name: Extract app version with validation
+        id: extract_version
+        run: |
+          VERSION=$(grep -E "^version:" pubspec.yaml | awk '{print $2}' | cut -d'+' -f1)
+          if [ -z "$VERSION" ] || ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Error: Invalid version format extracted: '$VERSION'"
+            exit 1
+          fi
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+          
+          echo "$VERSION" > syna-version.txt
+          echo "Created syna-version.txt with content: $(cat syna-version.txt)"
+
+      - name: Upload syna-version.txt to file server
+        run: |
+          curl --http1.1 -X POST \
+            -H "Authorization: Bearer ${{ secrets.API_TOKEN }}" \
+            -F "file=@syna-version.txt" \
+            "${{ secrets.UPLOAD_URL }}"
+          echo "Successfully uploaded syna-version.txt to file server using provided command format"
+        env:
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+          UPLOAD_URL: ${{ secrets.UPLOAD_URL }}
+
+      - name: install dep
+        run: flutter clean && flutter pub get && flutter pub run flutter_launcher_icons
+
+      - name: build macos
+        run: flutter build macos
+
+      - name: Zip built app
+        run: |
+          zip -r -X synaesthesia_mac.zip build/macos/Build/Products/Release/synaesthesia.app
+
+      - name: Check if release already exists
+        id: check_release
+        run: |
+          if gh release view "v${{ env.APP_VERSION }}" >/dev/null 2>&1; then
+            echo "Release v${{ env.APP_VERSION }} already exists"
+            echo "RELEASE_EXISTS=true" >> $GITHUB_ENV
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release v${{ env.APP_VERSION }} does not exist"
+            echo "RELEASE_EXISTS=false" >> $GITHUB_ENV
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create tag and release with version file
+        if: ${{ steps.check_release.outputs.exists == 'false' }}
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          if git rev-parse "v${{ env.APP_VERSION }}" >/dev/null 2>&1; then
+            echo "Tag v${{ env.APP_VERSION }} already exists locally"
+          else
+            git tag -a "v${{ env.APP_VERSION }}" -m "Release v${{ env.APP_VERSION }}"
+          fi
+          git push origin "v${{ env.APP_VERSION }}"
+          
+          gh release create "v${{ env.APP_VERSION }}" \
+            --title "Release v${{ env.APP_VERSION }}" \
+            --notes "Automated release by GitHub Actions, including app releases for Android,Windows and MacOS" \
+            synaesthesia_mac.zip
+          echo "Successfully created release with syna-version.txt and mac file"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload additional file to existing release
+        if: ${{ steps.check_release.outputs.exists == 'true' }}
+        run: |
+          gh release upload "v${{ env.APP_VERSION }}" synaesthesia_mac.zip --clobber
+          echo "Successfully uploaded syna-version.txt and macOS file to existing release"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

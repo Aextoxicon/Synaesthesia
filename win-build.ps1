@@ -1,0 +1,1 @@
+flutter clean ; flutter build windows ; .\build\windows\x64\runner\Release\flutter_application.exe

@@ -1,0 +1,10 @@
+# 这个文件是方便我改APP名称来查找配置文件关键词的
+android:label="flutter_application"
+
+# iOS
+<key>CFBundleDisplayName</key>\s*<string>
+
+# win
+if (!window.Create
+
+echo "renamed to $appName"
