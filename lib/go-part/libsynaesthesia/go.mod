@@ -1,3 +1,3 @@
-module aextoxicon.site/synasethesia
+module libsynaesthesia
 
 go 1.25.6

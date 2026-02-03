@@ -33,6 +33,7 @@ var config Config
 var httpServer *http.Server
 var mu sync.RWMutex
 
+//export synaInit
 func synaInit(configPath *C.char) C.int {
 	mu.Lock()
 	defer mu.Unlock()
@@ -83,7 +84,6 @@ func synaInit(configPath *C.char) C.int {
 
 	return 0
 }
-
 func tokenAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
@@ -175,31 +175,13 @@ func downloadHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func listHandler(w http.ResponseWriter, r *http.Request) {
-	entries, err := os.ReadDir(config.UploadDir)
-	if err != nil {
-		log.Printf("read dir failed: %v", err)
-		http.Error(w, `{"error": "获取文件列表失败"}`, http.StatusInternalServerError)
-		return
-	}
+	scanResult := synaScan()
 
-	var files []map[string]interface{}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		files = append(files, map[string]interface{}{
-			"filename": entry.Name(),
-			"size":     info.Size(),
-			"modTime":  info.ModTime().Format("2006-01-02 15:04:05"),
-		})
-	}
+	scanResultStr := C.GoString(scanResult)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"files": files})
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, scanResultStr)
 }
 
 func sanitizeFilename(name string) string {
@@ -212,6 +194,7 @@ func urlEncodeFileName(name string) string {
 	return strings.ReplaceAll(url.QueryEscape(name), "+", "%20")
 }
 
+//export synaGetUploadDir
 func synaGetUploadDir() *C.char {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -271,6 +254,7 @@ func synaProcessFiles(files []FileState) ([]FileState, error) {
 	return result, nil
 }
 
+//export synaScan
 func synaScan() *C.char {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -333,6 +317,7 @@ func synaScan() *C.char {
 	return C.CString(string(jsonResponse))
 }
 
+//export synaStartHttpServer
 func synaStartHttpServer() C.int {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -354,7 +339,7 @@ func synaStartHttpServer() C.int {
 	http.HandleFunc("/download/", downloadHandler)
 
 	go func() {
-		log.Printf("HTTP server running on http://localhost：%s", addr)
+		log.Printf("HTTP server running on http://localhost:%s", addr)
 		log.Printf("Work dir is: %s", config.UploadDir)
 		if config.UseToken {
 			log.Printf("Token authentication is enabled")
@@ -369,6 +354,7 @@ func synaStartHttpServer() C.int {
 	return 0
 }
 
+//export synaStopHttpServer
 func synaStopHttpServer() C.int {
 	mu.Lock()
 	defer mu.Unlock()
