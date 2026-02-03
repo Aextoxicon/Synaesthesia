@@ -29,6 +29,7 @@
 		33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11122044BFA00003C045 /* MainFlutterWindow.swift */; };
 		3B2F0FF604F7F4A925981D7D /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 63C1FA1B10A36E45CE0E8565 /* Pods_Runner.framework */; };
 		6839898A2FE8C533A26D6064 /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CC87A136E2FE8067D802CD7D /* Pods_RunnerTests.framework */; };
+		DC73A9BD2F31E86000617E13 /* libsynaesthesia.dylib in CopyFiles */ = {isa = PBXBuildFile; fileRef = DC73A9BC2F31E86000617E13 /* libsynaesthesia.dylib */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +58,16 @@
 			files = (
 			);
 			name = "Bundle Framework";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DC73A9BB2F31E81F00617E13 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 12;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				DC73A9BD2F31E86000617E13 /* libsynaesthesia.dylib in CopyFiles */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -88,6 +99,7 @@
 		BF927C1C606E297FE75B1146 /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
 		CC87A136E2FE8067D802CD7D /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		DB4E97CF3E0DFC393EF4BCCC /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
+		DC73A9BC2F31E86000617E13 /* libsynaesthesia.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; path = libsynaesthesia.dylib; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -132,6 +144,7 @@
 		33CC10E42044A3C60003C045 = {
 			isa = PBXGroup;
 			children = (
+				DC73A9BC2F31E86000617E13 /* libsynaesthesia.dylib */,
 				33FAB671232836740065AC1E /* Runner */,
 				33CEB47122A05771004F2AC0 /* Flutter */,
 				331C80D6294CF71000263BE5 /* RunnerTests */,
@@ -195,7 +208,6 @@
 				DB4E97CF3E0DFC393EF4BCCC /* Pods-RunnerTests.release.xcconfig */,
 				52F3D0FA5108B33FCAF1D53B /* Pods-RunnerTests.profile.xcconfig */,
 			);
-			name = Pods;
 			path = Pods;
 			sourceTree = "<group>";
 		};
@@ -241,6 +253,7 @@
 				33CC110E2044A8840003C045 /* Bundle Framework */,
 				3399D490228B24CF009A79C7 /* ShellScript */,
 				DAA3036E431E8CAC993B20F2 /* [CP] Embed Pods Frameworks */,
+				DC73A9BB2F31E81F00617E13 /* CopyFiles */,
 			);
 			buildRules = (
 			);
