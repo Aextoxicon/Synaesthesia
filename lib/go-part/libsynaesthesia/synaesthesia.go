@@ -22,29 +22,10 @@ import (
 
 type Config struct {
 	UploadDir  string `json:"uploadDir"`
-	ApiToken   string `json:"apiToken"`
-	Port       int    `json:"port"`
 	UseCompare bool   `json:"useCompare"`
 }
 
 var config Config
-
-var mimeTypes = map[string]string{
-	".css":  "text/css",
-	".gif":  "image/gif",
-	".htm":  "text/html",
-	".html": "text/html",
-	".jpeg": "image/jpeg",
-	".jpg":  "image/jpeg",
-	".js":   "application/javascript",
-	".mjs":  "application/javascript",
-	".pdf":  "application/pdf",
-	".png":  "image/png",
-	".svg":  "image/svg+xml",
-	".wasm": "application/wasm",
-	".webp": "image/webp",
-	".xml":  "text/xml",
-}
 
 var mu sync.RWMutex
 
@@ -81,36 +62,6 @@ func synaInit(configPath *C.char) C.int {
 	os.Remove(testFile)
 
 	return 0
-}
-
-func synaListFiles() *C.char {
-	mu.RLock()
-	defer mu.RUnlock()
-
-	entries, err := os.ReadDir(config.UploadDir)
-	if err != nil {
-		log.Printf("read dir failed: %v", err)
-		errorResponse := `{"error": "获取文件列表失败"}`
-		return C.CString(errorResponse)
-	}
-
-	var files []map[string]interface{}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		files = append(files, map[string]interface{}{
-			"filename": entry.Name(),
-			"size":     info.Size(),
-		})
-	}
-
-	response, _ := json.Marshal(map[string]interface{}{"files": files})
-	return C.CString(string(response))
 }
 
 func synaGetUploadDir() *C.char {
@@ -405,20 +356,26 @@ func synaScan() *C.char {
 		}
 
 		absPath := filepath.Join(config.UploadDir, entry.Name())
-		fileState := FileState{
-			Name:    entry.Name(),
-			Size:    info.Size(),
-			ModTime: info.ModTime(),
-		}
-
-		allFiles = append(allFiles, fileState)
-
+		
 		if isTextFile(absPath) {
-
+			// 对于文本文件，读取内容并添加到textFiles
 			if contentBytes, err := os.ReadFile(absPath); err == nil {
-				fileState.Content = string(contentBytes)
+				fileState := FileState{
+					Name:    entry.Name(),
+					Size:    info.Size(),
+					ModTime: info.ModTime(),
+					Content: string(contentBytes),
+				}
+				textFiles = append(textFiles, fileState)
 			}
-			textFiles = append(textFiles, fileState)
+		} else {
+			// 对于非文本文件（二进制文件），添加到allFiles
+			fileState := FileState{
+				Name:    entry.Name(),
+				Size:    info.Size(),
+				ModTime: info.ModTime(),
+			}
+			allFiles = append(allFiles, fileState)
 		}
 	}
 
@@ -432,6 +389,7 @@ func synaScan() *C.char {
 	}
 
 
+	// 处理allFiles中的二进制文件，计算SHA256
 	processedAllFiles, err := synaProcessFiles(allFiles)
 	if err != nil {
 		log.Printf("process all files failed: %v", err)
@@ -440,6 +398,7 @@ func synaScan() *C.char {
 	}
 
 
+	// 处理textFiles中的文本文件，计算SHA256和差分
 	processedTextFiles, err := synaTextFiles(textFiles, prevStates)
 	if err != nil {
 		log.Printf("process text files failed: %v", err)
@@ -454,7 +413,6 @@ func synaScan() *C.char {
 	}
 	for _, bf := range allFiles {
 		if _, exists := currentStates[bf.Name]; !exists {
-
 			currentStates[bf.Name] = FileState{
 				Name:    bf.Name,
 				Size:    bf.Size,
@@ -470,8 +428,8 @@ func synaScan() *C.char {
 
 
 	response := map[string]interface{}{
-		"allFiles":    processedAllFiles,
-		"textFiles":   processedTextFiles,
+		"allFiles":    processedAllFiles,  // 现在这里只包含二进制文件
+		"textFiles":   processedTextFiles, // 这里包含文本文件
 	}
 
 	jsonResponse, err := json.Marshal(response)
