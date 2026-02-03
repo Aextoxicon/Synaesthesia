@@ -4,13 +4,11 @@ import 'dart:collection';
 import 'dart:math';
 import 'dart:ffi';
 import 'dart:ffi' as ffi;
-import 'watcher.dart';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
-import 'synaesthesia_ffi.dart';
 
 enum SyncMode { server, client }
 
@@ -119,16 +117,12 @@ class Pages extends StatelessWidget {
     return Consumer<MyAppState>(
       builder: (context, appState, child) {
         return Scaffold(
-          body: IndexedStack(
-            index: appState.currentIdx,
-            children: const [SyncPage(), WatcherPage()],
-          ),
+          body: const SyncPage(),
           bottomNavigationBar: BottomNavigationBar(
-            currentIndex: appState.currentIdx,
-            onTap: (index) => appState.setIdx(index),
+            currentIndex: 0,
+            onTap: null,
             items: const [
               BottomNavigationBarItem(icon: Icon(Icons.devices), label: '设备发现'),
-              BottomNavigationBarItem(icon: Icon(Icons.folder), label: '文件监控'),
             ],
           ),
         );
@@ -142,16 +136,9 @@ class MyAppState extends ChangeNotifier {
   var currentIdx = 0;
   String lastEvent = "No event yet";
   String watchPath = "";
-  final watcherd _watcher = watcherd();
   final List<String> eventHistory = [];
 
   SyncMode syncMode = SyncMode.server;
-
-  Map<String, dynamic>? _cachedLocalFiles;
-  Map<String, dynamic>? _cachedRemoteFiles;
-  DateTime? _localCacheTime;
-  DateTime? _remoteCacheTime;
-  static const Duration cacheDuration = Duration(seconds: 30);
 
   void setSyncMode(SyncMode mode) {
     syncMode = mode;
@@ -165,31 +152,10 @@ class MyAppState extends ChangeNotifier {
   String httpUser = 'user';
   String httpPwd = 'pwd123';
 
-  String localIPAddress = 'localhost';
-
-  MyAppState() {
-    _watcher.onEvent.listen((event) {
-      if (event.containsKey('event')) {
-        final jsonEvent = jsonDecode(event['event']!);
-        String formattedEvent = '';
-
-        if (jsonEvent['type'] == 'error') {
-          formattedEvent =
-              '错误: ${jsonEvent['message']} (${jsonEvent['timestamp']})';
-        } else {
-          formattedEvent =
-              '${jsonEvent['type']}: ${jsonEvent['path']} (${jsonEvent['timestamp']})';
-        }
-
-        updateLastEvent(formattedEvent);
-        clearFileCache();
-      }
-    });
-  }
+  MyAppState();
 
   void setWatchPath(String path) {
     watchPath = path;
-    _watcher.startWatch(path);
     notifyListeners();
   }
 
@@ -207,1286 +173,7 @@ class MyAppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> getLocalIPAddress() async {
-    try {
-      final List<NetworkInterface> interfaces = await NetworkInterface.list(
-        includeLoopback: false,
-        includeLinkLocal: false,
-        type: InternetAddressType.IPv4,
-      );
-
-      for (final interface in interfaces) {
-        for (final address in interface.addresses) {
-
-          if (address.type == InternetAddressType.IPv4 &&
-              !address.isLoopback &&
-              !address.isLinkLocal) {
-            localIPAddress = address.address;
-            notifyListeners();
-            return;
-          }
-        }
-      }
-    } catch (e) {
-      print('获取本机IP地址失败: $e');
-    }
-  }
-
-
-  void startHTTP() async {
-    if (watchPath.isEmpty) {
-      print('请先选择要同步的目录');
-      return;
-    }
-
-    bool _checkAuth(HttpRequest request) {
-      final authHeader = request.headers.value('authorization');
-      if (authHeader == null || !authHeader.startsWith('Basic ')) {
-        return false;
-      }
-
-      final encodedAuth = authHeader.substring(6);
-      try {
-        final decodedAuth = utf8.decode(base64Decode(encodedAuth));
-        final parts = decodedAuth.split(':');
-        if (parts.length != 2) {
-          return false;
-        }
-
-        final user = parts[0];
-        final pwd = parts[1];
-
-        return user == httpUser && pwd == httpPwd;
-      } catch (e) {
-        print('认证解析失败: $e');
-        return false;
-      }
-    }
-
-    Future<void> _fileUpload(HttpRequest request, String path) async {
-      IOSink? sink;
-      try {
-        print('开始处理文件上传请求，路径: $path');
-
-
-        final normalizedPath = path.startsWith('/') ? path.substring(1) : path;
-        print('标准化路径: $normalizedPath');
-
-
-        final filePath = '$watchPath${Platform.pathSeparator}$normalizedPath'
-            .replaceAll('/', Platform.pathSeparator)
-            .replaceAll('\\', Platform.pathSeparator)
-            .replaceAll(
-              '${Platform.pathSeparator}${Platform.pathSeparator}',
-              Platform.pathSeparator,
-            );
-
-        final file = File(filePath);
-        print('准备接收上传文件: $filePath');
-        print('监控路径: $watchPath');
-
-
-        final parentDir = file.parent;
-        print('父目录路径: ${parentDir.path}');
-
-        try {
-          if (!await parentDir.exists()) {
-            print('父目录不存在，正在创建...');
-            await parentDir.create(recursive: true);
-            print('创建目录成功: ${parentDir.path}');
-          } else {
-            print('父目录已存在: ${parentDir.path}');
-          }
-        } catch (dirError) {
-          print('创建目录失败: $dirError');
-          request.response
-            ..statusCode = HttpStatus.internalServerError
-            ..write('Failed to create directory: $dirError')
-            ..close();
-          return;
-        }
-
-
-        try {
-          print('开始流式写入文件...');
-          sink = file.openWrite();
-          int totalBytes = 0;
-          await for (var data in request) {
-            sink.add(data);
-            totalBytes += data.length;
-          }
-          await sink.close();
-          print('文件写入成功: $filePath, 总大小: $totalBytes 字节');
-        } catch (writeError) {
-          await sink?.close();
-          if (await file.exists()) {
-            await file.delete();
-          }
-          rethrow;
-        }
-
-
-        request.response
-          ..statusCode = HttpStatus.ok
-          ..headers.set('Content-Type', 'text/plain; charset=utf-8')
-          ..write('File uploaded successfully')
-          ..close();
-
-        print('文件上传完成: $filePath');
-      } catch (e, stackTrace) {
-
-        await sink?.close();
-        print('文件上传过程中发生未处理的异常: $e');
-        print('详细堆栈信息: $stackTrace');
-        try {
-          request.response
-            ..statusCode = HttpStatus.internalServerError
-            ..headers.set('Content-Type', 'text/plain; charset=utf-8')
-            ..write('File upload failed: $e')
-            ..close();
-        } catch (responseError) {
-          print('发送错误响应失败: $responseError');
-        }
-      }
-    }
-
-    try {
-
-      httpServer = await HttpServer.bind(InternetAddress.anyIPv4, httpPort);
-
-      httpServer!.listen((HttpRequest request) async {
-        bool isAuthenticated = true;
-        if (httpUser.isNotEmpty && httpPwd.isNotEmpty) {
-          isAuthenticated = _checkAuth(request);
-        }
-
-        if (!isAuthenticated) {
-          request.response
-            ..statusCode = HttpStatus.unauthorized
-            ..headers.set('WWW-Authenticate', 'Basic realm="flutter-demo"')
-            ..write('Unauthorized')
-            ..close();
-          return;
-        }
-
-        final path = request.uri.path;
-
-
-        if (path.startsWith('/api/')) {
-          await _apiRequest(request, path);
-          return;
-        }
-
-
-        if (path == '/.scan_result.json') {
-          await _jsonRequest(request);
-          return;
-        }
-
-
-        if (request.method == 'PUT') {
-          await _fileUpload(request, path);
-          return;
-        }
-
-
-        if (path == '/' || path.isEmpty) {
-          final dir = Directory(watchPath);
-          final entities = await dir.list().toList();
-
-          final StringBuffer buffer = StringBuffer();
-          buffer.write('<html><head><title>文件列表</title></head><body>');
-          buffer.write('<h1>目录内容</h1><ul>');
-
-          for (final entity in entities) {
-            final name = entity.uri.pathSegments.last;
-            final isDir = entity is Directory ? '📁' : '📄';
-            buffer.write('<li>$isDir <a href="$name">$name</a></li>');
-          }
-
-          buffer.write('</ul></body></html>');
-
-          request.response
-            ..headers.contentType = ContentType.html
-            ..write(buffer.toString())
-            ..close();
-        } else {
-          String normalizedPath = path;
-          if (normalizedPath.startsWith('/')) {
-            normalizedPath = normalizedPath.substring(1);
-          }
-
-
-          final filePath = '$watchPath${Platform.pathSeparator}$normalizedPath'
-              .replaceAll('/', Platform.pathSeparator)
-              .replaceAll('\\', Platform.pathSeparator)
-              .replaceAll(
-                '${Platform.pathSeparator}${Platform.pathSeparator}',
-                Platform.pathSeparator,
-              );
-
-          final file = File(filePath);
-
-          print('尝试提供文件: $filePath (原始请求路径: $path, 监控路径: $watchPath)');
-
-          if (await file.exists()) {
-            print('文件存在，开始传输: $filePath');
-
-            request.response.headers.contentType = _getContentType(filePath);
-
-
-            final length = await file.length();
-            request.response.headers.set('Content-Length', length.toString());
-
-
-            await request.response.addStream(file.openRead());
-            await request.response.close();
-            print('文件传输完成: $filePath');
-          } else {
-            print('文件不存在: $filePath');
-            print('监控路径: $watchPath');
-            print('请求路径: $path');
-            print('标准化路径: $normalizedPath');
-            request.response
-              ..statusCode = HttpStatus.notFound
-              ..headers.contentType = ContentType.html
-              ..write(
-                '<html><body><h1>404 - 文件未找到</h1><p>请求的文件 $path 不存在</p><p>完整路径: $filePath</p></body></html>',
-              )
-              ..close();
-          }
-        }
-      });
-
-      isHTTPRunning = true;
-      notifyListeners();
-      print('HTTP服务器已启动，端口: $httpPort');
-
-      getLocalIPAddress();
-    } catch (e) {
-      print('启动HTTP服务器失败: $e');
-    }
-  }
-
-
-  ContentType _getContentType(String filePath) {
-    final lowerPath = filePath.toLowerCase();
-    if (lowerPath.endsWith('.json')) {
-      return ContentType('application', 'json');
-    } else if (lowerPath.endsWith('.html') || lowerPath.endsWith('.htm')) {
-      return ContentType('text', 'html');
-    } else if (lowerPath.endsWith('.css')) {
-      return ContentType('text', 'css');
-    } else if (lowerPath.endsWith('.js')) {
-      return ContentType('application', 'javascript');
-    } else if (lowerPath.endsWith('.png')) {
-      return ContentType('image', 'png');
-    } else if (lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg')) {
-      return ContentType('image', 'jpeg');
-    } else if (lowerPath.endsWith('.gif')) {
-      return ContentType('image', 'gif');
-    } else {
-      return ContentType('application', 'octet-stream');
-    }
-  }
-
-
-  Future<void> _apiRequest(HttpRequest request, String path) async {
-    if (path == '/api/file-list') {
-      await _fileListRequest(request);
-    } else {
-      request.response
-        ..statusCode = HttpStatus.notFound
-        ..write('API未找到')
-        ..close();
-    }
-  }
-
-
-  Future<void> _jsonRequest(HttpRequest request) async {
-    try {
-      final fileMap = await _scanDir(watchPath);
-      final jsonResponse = jsonEncode(fileMap);
-
-      request.response
-        ..headers.contentType = ContentType.json
-        ..write(jsonResponse)
-        ..close();
-    } catch (e) {
-      print('生成文件列表失败: $e');
-      request.response
-        ..statusCode = HttpStatus.internalServerError
-        ..write('{"error": "Internal server error"}')
-        ..close();
-    }
-  }
-
-
-  Future<void> _fileListRequest(HttpRequest request) async {
-    try {
-      final fileMap = await _scanDir(watchPath);
-      final jsonResponse = jsonEncode(fileMap);
-
-      request.response
-        ..headers.contentType = ContentType.json
-        ..write(jsonResponse)
-        ..close();
-    } catch (e) {
-      print('生成文件列表失败: $e');
-      request.response
-        ..statusCode = HttpStatus.internalServerError
-        ..write('{"error": "Internal server error"}')
-        ..close();
-    }
-  }
-
-
-  Future<Map<String, dynamic>> _scanDir(String rootPath) async {
-    final fileMap = <String, dynamic>{};
-    final dir = Directory(rootPath);
-
-    if (!await dir.exists()) {
-      return fileMap;
-    }
-
-    await _scanDirForApi(dir, rootPath, fileMap);
-    return fileMap;
-  }
-
-
-  Future<void> _scanDirForApi(
-    Directory dir,
-    String rootPath,
-    Map<String, dynamic> fileMap,
-  ) async {
-    try {
-      await for (final FileSystemEntity entity in dir.list()) {
-
-        final relativePath = entity.path
-            .replaceFirst(rootPath, '')
-            .replaceAll('\\', '/');
-        if (relativePath.isEmpty) continue;
-
-        final normalizedPath = relativePath.startsWith('/')
-            ? relativePath
-            : '/$relativePath';
-
-        print(
-          '扫描到文件/目录: 路径=$normalizedPath, 完整路径=${entity.path}, 类型=${entity.runtimeType}',
-        );
-
-        if (entity is Directory) {
-          final dirInfo = {
-            'type': 'directory',
-            'path': normalizedPath,
-            'children': <dynamic>[],
-          };
-
-          await _scanDirForApi(
-            entity,
-            rootPath,
-            dirInfo as Map<String, dynamic>,
-          );
-
-          fileMap[normalizedPath] = dirInfo;
-        } else if (entity is File) {
-          final stat = await entity.stat();
-          fileMap[normalizedPath] = {
-            'type': 'file',
-            'path': normalizedPath,
-            'size': stat.size,
-            'modified': stat.modified.toIso8601String(),
-          };
-        }
-      }
-    } catch (e) {
-      print('扫描目录时出错: $e');
-    }
-  }
-
-
-  void stopHTTP() {
-    httpServer?.close();
-    isHTTPRunning = false;
-    httpServer = null;
-    notifyListeners();
-    print('HTTP服务器已停止');
-  }
-
-
-  Future<Map<String, dynamic>> scanDirWithCgo(String rootPath) async {
-    try {
-
-      final tempConfig = await File('${Directory.systemTemp.path}/syna_config.json').create();
-      await tempConfig.writeAsString(jsonEncode({
-        'uploadDir': rootPath,
-        'useCompare': true,
-      }));
-
-
-      final initResult = SynaesthesiaLibrary.instance.synaInit(tempConfig.path.toNativeUtf8().cast());
-      if (initResult != 0) {
-        print('CGO初始化失败: $initResult');
-        await tempConfig.delete();
-        return <String, dynamic>{};
-      }
-
-
-      final scanResultPtr = SynaesthesiaLibrary.instance.synaScan();
-      final scanResultStr = scanResultPtr.cast<Utf8>().toDartString();
-
-      await tempConfig.delete();
-
-
-      final result = jsonDecode(scanResultStr);
-      if (result.containsKey('error')) {
-        print('CGO扫描错误: ${result['error']}');
-        return <String, dynamic>{};
-      }
-
-      return result;
-    } catch (e) {
-      print('CGO扫描异常: $e');
-      return <String, dynamic>{};
-    }
-  }
-
-
-  Future<bool> httpUpload() async {
-    LogManager().clearLogs();
-    _log('开始上传文件到服务器');
-
-    if (watchPath.isEmpty) {
-      _log('请先选择本地目录');
-      return false;
-    }
-
-    try {
-      _log('正在获取文件差异结果...');
-      final diffResult = await diffScanResults();
-
-      if (diffResult.containsKey('error')) {
-        _log('获取差异结果失败: ${diffResult['error']}');
-        return false;
-      }
-
-
-      final onlyLocal = List<String>.from(diffResult['onlyLocal'] as List);
-      final different = List<Map<String, dynamic>>.from(
-        diffResult['different'] as List,
-      );
-
-
-      final fileUpload = <String>[];
-      fileUpload.addAll(onlyLocal);
-      fileUpload.addAll(different.map((item) => item['path'] as String));
-
-      if (fileUpload.isEmpty) {
-        _log('没有需要上传的文件');
-        eventHistory.insert(
-          0,
-          '没有需要上传的文件 (${DateTime.now().toIso8601String()})',
-        );
-        if (eventHistory.length > 100) {
-          eventHistory.removeLast();
-        }
-        notifyListeners();
-        return true;
-      }
-
-      _log('准备流式上传 ${fileUpload.length} 个文件到服务器');
-
-      bool success = true;
-      int upCount = 0;
-
-
-      for (final filePath in fileUpload) {
-        try {
-          final normalizedRelativePath = filePath.startsWith('/')
-              ? filePath.substring(1)
-              : filePath;
-          final fullPath = '$watchPath/$normalizedRelativePath'
-              .replaceAll('\\', '/');
-          final file = File(fullPath);
-
-          _log('检查文件是否存在: $fullPath');
-          if (!await file.exists()) {
-            _log('文件不存在: $fullPath');
-            eventHistory.insert(
-              0,
-              '文件不存在: $fullPath (${DateTime.now().toIso8601String()})',
-            );
-            if (eventHistory.length > 100) {
-              eventHistory.removeLast();
-            }
-            success = false;
-            continue;
-          }
-
-
-          final urlPath = filePath.startsWith('/') ? filePath : '/$filePath';
-          final url = Uri.http('$httpHost:$httpPortC', urlPath);
-
-
-          final fileName = file.uri.pathSegments.last;
-          _log('开始流式上传文件: $fileName 到 $url');
-
-
-          final Map<String, String> headers = {};
-          if (httpUser.isNotEmpty && httpPwd.isNotEmpty) {
-            final auth = base64Encode(utf8.encode('$httpUser:$httpPwd'));
-            headers['authorization'] = 'Basic $auth';
-          }
-
-
-          final client = HttpClient();
-          final request = await client.openUrl('PUT', url);
-
-
-          headers.forEach((key, value) {
-            request.headers.set(key, value);
-          });
-
-
-          final length = await file.length();
-          request.headers.set('Content-Length', length.toString());
-
-
-          final stream = file.openRead();
-          int bytesSent = 0;
-
-
-          final progressStream = stream.transform(
-            StreamTransformer<List<int>, List<int>>.fromHandlers(
-              handleData: (data, sink) {
-                bytesSent += data.length;
-                if (bytesSent % (1024 * 1024) == 0) {
-
-                  final progress = length > 0 ? (bytesSent / length) * 100 : 0;
-                  _log(
-                    '上传进度 [$fileName]: ${progress.toStringAsFixed(1)}% ($bytesSent/$length 字节)',
-                  );
-                }
-                sink.add(data);
-              },
-            ),
-          );
-
-          await progressStream.pipe(request);
-
-          final response = await request.close();
-
-          _log('收到服务器响应，状态码: ${response.statusCode}');
-
-          if (response.statusCode == 200 || response.statusCode == 201) {
-            upCount++;
-            _log('文件流式上传成功: $fileName');
-            eventHistory.insert(
-              0,
-              '文件上传成功: $fileName (${DateTime.now().toIso8601String()})',
-            );
-          } else if (response.statusCode == HttpStatus.unauthorized) {
-            _log('文件上传失败: 认证失败 ($fileName)');
-            eventHistory.insert(
-              0,
-              '文件上传失败: 认证失败 ($fileName) (${DateTime.now().toIso8601String()})',
-            );
-            success = false;
-          } else {
-            _log('文件上传失败，状态码: ${response.statusCode} ($fileName)');
-            final errorBody = await response.transform(utf8.decoder).join();
-            _log('错误响应内容: $errorBody');
-            eventHistory.insert(
-              0,
-              '文件上传失败: 状态码 ${response.statusCode} ($fileName) (${DateTime.now().toIso8601String()})',
-            );
-            success = false;
-          }
-        } catch (e) {
-          _log('处理文件时发生错误: $e');
-          eventHistory.insert(
-            0,
-            '处理文件时发生错误: $e ($filePath) (${DateTime.now().toIso8601String()})',
-          );
-          success = false;
-        }
-
-        if (eventHistory.length > 100) {
-          eventHistory.removeLast();
-        }
-      }
-
-      notifyListeners();
-
-      _log('上传完成，成功上传 $upCount/${fileUpload.length} 个文件');
-      eventHistory.insert(
-        0,
-        '上传完成，成功上传 $upCount/${fileUpload.length} 个文件 (${DateTime.now().toIso8601String()})',
-      );
-      if (eventHistory.length > 100) {
-        eventHistory.removeLast();
-      }
-      notifyListeners();
-
-      return success;
-    } catch (e, stackTrace) {
-      _log('HTTP流式上传失败: $e');
-      _log('详细错误信息: $stackTrace');
-      eventHistory.insert(
-        0,
-        'HTTP上传失败: $e (${DateTime.now().toIso8601String()})',
-      );
-      if (eventHistory.length > 100) {
-        eventHistory.removeLast();
-      }
-      notifyListeners();
-      return false;
-    }
-  }
-
-
-  Future<bool> httpDownload() async {
-    if (watchPath.isEmpty) {
-      print('请先选择本地目录');
-      return false;
-    }
-
-    try {
-      final diffResult = await diffScanResults();
-
-      if (diffResult.containsKey('error')) {
-        print('获取差异结果失败: ${diffResult['error']}');
-        return false;
-      }
-
-      final remoteFiles = await _scanRemoteFiles();
-
-      if (remoteFiles.containsKey('error')) {
-        print('获取远程文件列表失败: ${remoteFiles['error']}');
-        return false;
-      }
-
-      final onlyRemote = List<String>.from(diffResult['onlyRemote'] as List);
-      final different = List<Map<String, dynamic>>.from(
-        diffResult['different'] as List,
-      );
-
-      final fileDownload = <String>[];
-
-      for (final path in onlyRemote) {
-        final remoteFile = remoteFiles[path];
-        if (remoteFile != null && remoteFile['type'] == 'file') {
-          fileDownload.add(path);
-        }
-      }
-
-      for (final item in different) {
-        final path = item['path'] as String;
-        final remoteFile = remoteFiles[path];
-        if (remoteFile != null && remoteFile['type'] == 'file') {
-          fileDownload.add(path);
-        }
-      }
-
-      if (fileDownload.isEmpty) {
-        print('没有需要下载的文件');
-        eventHistory.insert(
-          0,
-          '没有需要下载的文件 (${DateTime.now().toIso8601String()})',
-        );
-        if (eventHistory.length > 100) {
-          eventHistory.removeLast();
-        }
-        notifyListeners();
-        return true;
-      }
-
-      print('准备从服务器流式下载 ${fileDownload.length} 个文件');
-
-      bool success = true;
-      int downCount = 0;
-
-      for (final filePath in fileDownload) {
-        try {
-          final urlPath = filePath.startsWith('/') ? filePath : '/$filePath';
-          final url = Uri.http('$httpHost:$httpPortC', urlPath);
-
-          final fileName = filePath.split('/').last;
-          print('开始从 $url 流式下载文件: $fileName');
-
-          final Map<String, String> headers = {};
-          if (httpUser.isNotEmpty && httpPwd.isNotEmpty) {
-            final auth = base64Encode(utf8.encode('$httpUser:$httpPwd'));
-            headers['authorization'] = 'Basic $auth';
-          }
-
-          final client = HttpClient();
-          final request = await client.getUrl(url);
-
-          headers.forEach((key, value) {
-            request.headers.set(key, value);
-          });
-
-          final response = await request.close();
-
-          print('收到服务器响应，状态码: ${response.statusCode}');
-
-          if (response.statusCode == 200) {
-            final normalizedRelativePath = filePath.startsWith('/')
-                ? filePath.substring(1)
-                : filePath;
-            final localFilePath =
-                '$watchPath${Platform.pathSeparator}$normalizedRelativePath'
-                    .replaceAll('/', Platform.pathSeparator)
-                    .replaceAll('\\', Platform.pathSeparator)
-                    .replaceAll(
-                      '${Platform.pathSeparator}${Platform.pathSeparator}',
-                      Platform.pathSeparator,
-                    );
-            final localFile = File(localFilePath);
-
-            final parentDir = localFile.parent;
-            try {
-              if (!await parentDir.exists()) {
-                print('父目录不存在，正在创建...');
-                await parentDir.create(recursive: true);
-                print('创建目录成功: ${parentDir.path}');
-              } else {
-                print('父目录已存在: ${parentDir.path}');
-              }
-            } catch (dirError) {
-              print('创建目录失败: $dirError');
-              eventHistory.insert(
-                0,
-                '创建目录失败: $dirError ($fileName) (${DateTime.now().toIso8601String()})',
-              );
-              success = false;
-              continue;
-            }
-
-
-            final totalBytes = response.contentLength ?? 0;
-            print('文件大小: $totalBytes 字节');
-
-            final fileSink = localFile.openWrite();
-            int bytesReceived = 0;
-
-
-            final progressStream = response.transform(
-              StreamTransformer<List<int>, List<int>>.fromHandlers(
-                handleData: (data, sink) {
-                  bytesReceived += data.length;
-                  if (totalBytes > 0 && bytesReceived % (1024 * 1024) == 0) {
-
-                    final progress = (bytesReceived / totalBytes) * 100;
-                    print(
-                      '下载进度 [$fileName]: ${progress.toStringAsFixed(1)}% ($bytesReceived/$totalBytes 字节)',
-                    );
-                  }
-                  sink.add(data);
-                },
-              ),
-            );
-
-            await progressStream.pipe(fileSink);
-
-            print('文件流式下载成功: $fileName');
-            downCount++;
-            eventHistory.insert(
-              0,
-              '文件下载成功: $fileName (${DateTime.now().toIso8601String()})',
-            );
-          } else if (response.statusCode == HttpStatus.unauthorized) {
-            print('文件下载失败: 认证失败 ($fileName)');
-            eventHistory.insert(
-              0,
-              '文件下载失败: 认证失败 ($fileName) (${DateTime.now().toIso8601String()})',
-            );
-            success = false;
-          } else if (response.statusCode == HttpStatus.notFound) {
-            print('文件下载失败: 远程文件不存在 $fileName');
-            print('请求URL: $url');
-            eventHistory.insert(
-              0,
-              '文件下载失败: 远程文件不存在 ($fileName) (${DateTime.now().toIso8601String()})',
-            );
-            success = false;
-          } else {
-            print('文件下载失败，状态码: ${response.statusCode} ($fileName)');
-
-            final errorBody = await response.transform(utf8.decoder).join();
-            print('错误响应内容: $errorBody');
-            eventHistory.insert(
-              0,
-              '文件下载失败: 状态码 ${response.statusCode} ($fileName) (${DateTime.now().toIso8601String()})',
-            );
-            success = false;
-          }
-        } catch (e) {
-          print('处理文件时发生错误: $e');
-          eventHistory.insert(
-            0,
-            '处理文件时发生错误: $e ($filePath) (${DateTime.now().toIso8601String()})',
-          );
-          success = false;
-        }
-
-        if (eventHistory.length > 100) {
-          eventHistory.removeLast();
-        }
-      }
-
-      notifyListeners();
-
-      print('下载完成，成功下载 $downCount/${fileDownload.length} 个文件');
-      eventHistory.insert(
-        0,
-        '下载完成，成功下载 $downCount/${fileDownload.length} 个文件 (${DateTime.now().toIso8601String()})',
-      );
-      if (eventHistory.length > 100) {
-        eventHistory.removeLast();
-      }
-      notifyListeners();
-
-      return success;
-    } catch (e, stackTrace) {
-      print('HTTP流式下载失败: $e');
-      print('详细错误信息: $stackTrace');
-      eventHistory.insert(
-        0,
-        'HTTP下载失败: $e (${DateTime.now().toIso8601String()})',
-      );
-      if (eventHistory.length > 100) {
-        eventHistory.removeLast();
-      }
-      notifyListeners();
-      return false;
-    }
-  }
-
-  Timer? _diffTimer;
-
-
-
-  Future<Map<String, dynamic>> diffScanResults() async {
-    if (watchPath.isEmpty) {
-      print('请先选择本地目录');
-      return {'error': '请先选择本地目录'};
-    }
-
-    try {
-      final localFiles = await _scanLocalFiles();
-
-      final remoteFiles = await _scanRemoteFiles();
-
-      if (remoteFiles.containsKey('error')) {
-        return remoteFiles;
-      }
-
-      print('本地文件数量: ${localFiles.length}');
-      print('远程文件数量: ${remoteFiles.length}');
-      if (localFiles.isNotEmpty) {
-        print('前几个本地文件路径: ${localFiles.keys.take(5).toList()}');
-      }
-      if (remoteFiles.isNotEmpty) {
-        print('前几个远程文件路径: ${remoteFiles.keys.take(5).toList()}');
-      }
-
-      final onlyLocal = localFiles.keys
-          .where((path) => !remoteFiles.containsKey(path))
-          .toList();
-
-      final onlyRemote = remoteFiles.keys
-          .where((path) => !localFiles.containsKey(path))
-          .toList();
-
-      final commonPaths = localFiles.keys
-          .where((path) => remoteFiles.containsKey(path))
-          .toList();
-      final different = <Map<String, dynamic>>[];
-
-      for (final path in commonPaths) {
-        final localFile = localFiles[path]!;
-        final remoteFile = remoteFiles[path]!;
-
-        if (remoteFile['type'] == 'file' && localFile is File) {
-          try {
-            final localModified = localFile.statSync().modified;
-            final remoteModified = DateTime.parse(remoteFile['modified']);
-
-
-            if (localModified.difference(remoteModified).inSeconds.abs() > 1) {
-              different.add({
-                'path': path,
-                'localModified': localModified.toIso8601String(),
-                'remoteModified': remoteModified.toIso8601String(),
-              });
-            }
-          } catch (e) {
-            print('比较文件修改时间失败 $path: $e');
-          }
-        }
-      }
-
-      print('仅在本地存在的文件数量: ${onlyLocal.length}');
-      if (onlyLocal.isNotEmpty) {
-        print('前几个仅在本地存在的文件: ${onlyLocal.take(5).toList()}');
-      }
-
-      print('仅在远程存在的文件数量: ${onlyRemote.length}');
-      if (onlyRemote.isNotEmpty) {
-        print('前几个仅在远程存在的文件: ${onlyRemote.take(5).toList()}');
-      }
-
-      print('修改时间不同的文件数量: ${different.length}');
-      if (different.isNotEmpty) {
-        print(
-          '前几个修改时间不同的文件: ${different.take(5).map((d) => d['path']).toList()}',
-        );
-      }
-
-      return {
-        'onlyLocal': onlyLocal,
-        'onlyRemote': onlyRemote,
-        'different': different,
-      };
-    } catch (e, stackTrace) {
-      print('比较文件失败: $e');
-      print('详细错误信息: $stackTrace');
-      return {'error': '比较文件失败: $e'};
-    }
-  }
-
-  Future<Map<String, File>> _scanLocalFiles() async {
-    if (_cachedLocalFiles != null &&
-        _localCacheTime != null &&
-        DateTime.now().difference(_localCacheTime!) < cacheDuration) {
-      print('使用本地文件缓存，缓存时间: $_localCacheTime');
-
-      final Map<String, File> fileMap = {};
-      _cachedLocalFiles!.forEach((path, info) {
-        if (info is File) {
-          fileMap[path] = info;
-        }
-      });
-      return fileMap;
-    }
-
-    print('重新扫描本地文件（跳过缓存）');
-    final files = <String, File>{};
-    final dir = Directory(watchPath);
-
-    if (!await dir.exists()) {
-
-      _cachedLocalFiles = {};
-      _localCacheTime = DateTime.now();
-      return files;
-    }
-
-    try {
-      await for (final entity in dir.list(recursive: true)) {
-        if (entity is File) {
-          final relativePath = entity.path
-              .replaceFirst(watchPath, '')
-              .replaceAll('\\', '/');
-          final normalizedPath = relativePath.startsWith('/')
-              ? relativePath
-              : '/$relativePath';
-          files[normalizedPath] = entity;
-        }
-      }
-    } catch (e) {
-      print('扫描本地文件失败: $e');
-    }
-
-
-    _cachedLocalFiles = Map<String, dynamic>.from(files);
-    _localCacheTime = DateTime.now();
-    print('更新本地文件缓存，文件数量: ${files.length}');
-
-    return files;
-  }
-
-  void clearFileCache() {
-    _cachedLocalFiles = null;
-    _cachedRemoteFiles = null;
-    _localCacheTime = null;
-    _remoteCacheTime = null;
-    print('文件缓存已清除');
-  }
-
-
-  Future<void> refreshFileCache() async {
-    print('手动刷新文件缓存');
-    clearFileCache();
-    await _scanLocalFiles();
-    await _scanRemoteFiles();
-  }
-
-  Future<Map<String, dynamic>> _scanRemoteFiles() async {
-    if (_cachedRemoteFiles != null &&
-        _remoteCacheTime != null &&
-        DateTime.now().difference(_remoteCacheTime!) < cacheDuration) {
-      print('使用远程文件缓存，缓存时间: $_remoteCacheTime');
-      return _cachedRemoteFiles!;
-    }
-
-    print('重新获取远程文件列表（跳过缓存）');
-    try {
-      final url = Uri.http('$httpHost:$httpPortC', '/api/file-list');
-      print('开始从 $url 获取远程文件列表');
-
-      final Map<String, String> headers = {};
-      if (httpUser.isNotEmpty && httpPwd.isNotEmpty) {
-        final auth = base64Encode(utf8.encode('$httpUser:$httpPwd'));
-        headers['authorization'] = 'Basic $auth';
-      }
-
-      http.Response? response;
-      int retryCount = 0;
-      const maxRetry = 3;
-
-      while (retryCount <= maxRetry) {
-        try {
-          response = await http
-              .get(url, headers: headers)
-              .timeout(Duration(seconds: 15));
-          break;
-        } catch (e) {
-          retryCount++;
-          if (retryCount > maxRetry) {
-            rethrow;
-          }
-          print('请求失败，正在重试 ($retryCount/$maxRetry): $e');
-          await Future.delayed(Duration(seconds: 2 * retryCount));
-        }
-      }
-
-      if (response == null) {
-        print('HTTP请求失败: 无响应');
-        return {'error': 'HTTP请求失败: 无响应'};
-      }
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data is Map<String, dynamic>) {
-          print('接收到远程文件列表，文件数量: ${data.length}');
-          if (data.isNotEmpty) {
-            print('前几个远程文件: ${data.keys.take(5).toList()}');
-            final firstKey = data.keys.first;
-            print('第一个文件信息: key=$firstKey, value=${data[firstKey]}');
-          }
-
-
-          _cachedRemoteFiles = data;
-          _remoteCacheTime = DateTime.now();
-          print('更新远程文件缓存，文件数量: ${data.length}');
-
-
-          final normalizedData = <String, dynamic>{};
-          data.forEach((path, info) {
-            final normalizedPath = path.startsWith('/') ? path : '/$path';
-            normalizedData[normalizedPath] = info;
-          });
-
-          return normalizedData;
-        } else {
-          print('远程响应数据格式不正确: $data');
-          return {};
-        }
-      } else if (response.statusCode == HttpStatus.unauthorized) {
-        print('获取远程数据失败: 认证失败');
-        return {'error': '认证失败'};
-      } else {
-        print('获取远程数据失败，状态码: ${response.statusCode}');
-        print('响应内容: ${response.body}');
-        return {'error': '获取远程数据失败，状态码: ${response.statusCode}'};
-      }
-    } catch (e, stackTrace) {
-      print('获取远程文件列表失败: $e');
-      print('详细错误信息: $stackTrace');
-      return {'error': '获取远程文件列表失败: $e'};
-    }
-  }
-
-
-  Map<String, dynamic> _extractRemoteFilesOnly(
-    Map<String, dynamic> remoteFiles,
-  ) {
-    final fileMap = <String, dynamic>{};
-
-    remoteFiles.forEach((path, info) {
-      if (info is Map<String, dynamic> && info['type'] == 'file') {
-        fileMap[path] = info;
-      }
-    });
-
-    return fileMap;
-  }
-
-
-  List<String> _extPath(Map<String, dynamic> tree) {
-    final paths = <String>[];
-
-    void traverse(dynamic node) {
-      if (node is! Map<String, dynamic>) return;
-
-      if (node['type'] == 'file' && node.containsKey('path')) {
-        paths.add(node['path']);
-      } else if (node['type'] == 'directory' && node.containsKey('children')) {
-        final children = node['children'] as List?;
-        if (children != null) {
-          for (final child in children) {
-            traverse(child);
-          }
-        }
-      }
-    }
-
-    traverse(tree);
-    return paths;
-  }
-
-
-  Future<List<Map<String, dynamic>>> _compare(
-    Map<String, dynamic> localData,
-    Map<String, dynamic> remoteData,
-    List<String> commonPaths,
-  ) async {
-    final different = <Map<String, dynamic>>[];
-
-
-    final localPathMap = _createMap(localData['directoryTree'] ?? {});
-    final remotePathMap = _createMap(remoteData['directoryTree'] ?? {});
-
-    for (final path in commonPaths) {
-      final localNode = localPathMap[path];
-      final remoteNode = remotePathMap[path];
-
-      if (localNode != null && remoteNode != null) {
-        try {
-          final localModified = DateTime.parse(localNode['modified']);
-          final remoteModified = DateTime.parse(remoteNode['modified']);
-
-          if (localModified.difference(remoteModified).inSeconds.abs() > 1) {
-            different.add({
-              'path': path,
-              'localModified': localModified.toIso8601String(),
-              'remoteModified': remoteModified.toIso8601String(),
-            });
-          }
-        } catch (e) {
-          print('比较文件修改时间失败 $path: $e');
-        }
-      }
-    }
-
-    return different;
-  }
-
-
-  Map<String, Map<String, dynamic>> _createMap(Map<String, dynamic> tree) {
-    final pathMap = <String, Map<String, dynamic>>{};
-
-    void traverse(dynamic node) {
-      if (node is! Map<String, dynamic>) return;
-
-      if (node.containsKey('path')) {
-        pathMap[node['path']] = node;
-      }
-
-      if (node['type'] == 'directory' && node.containsKey('children')) {
-        final children = node['children'] as List?;
-        if (children != null) {
-          for (final child in children) {
-            traverse(child);
-          }
-        }
-      }
-    }
-
-    traverse(tree);
-    return pathMap;
-  }
-
-
-  Future<bool> testHttp(String host, int port) async {
-    try {
-      final url = Uri.http('$host:$port', '/');
-      print('测试HTTP连接到: $url');
-
-      final Map<String, String> headers = {};
-      if (httpUser.isNotEmpty && httpPwd.isNotEmpty) {
-        final auth = base64Encode(utf8.encode('$httpUser:$httpPwd'));
-        headers['authorization'] = 'Basic $auth';
-      }
-
-      http.Response? response;
-      int retryCount = 0;
-      const maxRetry = 3;
-      const timeoutSeconds = 5;
-
-      while (retryCount <= maxRetry) {
-        try {
-          response = await http
-              .get(url, headers: headers)
-              .timeout(
-                Duration(seconds: timeoutSeconds),
-                onTimeout: () {
-                  print('HTTP连接测试超时 (URL: $url)');
-                  throw TimeoutException(
-                    'HTTP连接测试超时: $url',
-                    Duration(seconds: timeoutSeconds),
-                  );
-                },
-              );
-          break;
-        } catch (e) {
-          retryCount++;
-          if (retryCount > maxRetry) {
-            print('HTTP连接测试失败，已达到最大重试次数 ($maxRetry): $e');
-            eventHistory.insert(
-              0,
-              'HTTP连接测试失败: $e (${DateTime.now().toIso8601String()})',
-            );
-            if (eventHistory.length > 100) {
-              eventHistory.removeLast();
-            }
-            notifyListeners();
-            rethrow;
-          }
-          print('连接测试失败，正在重试 ($retryCount/$maxRetry): $e');
-          await Future.delayed(Duration(seconds: 2 * retryCount));
-        }
-      }
-
-      if (response == null) {
-        print('HTTP连接测试失败: 无响应');
-        return false;
-      }
-
-      print('HTTP连接测试成功，状态码: ${response.statusCode}');
-
-      if (response.statusCode == HttpStatus.unauthorized) {
-        print('HTTP连接测试失败: 认证失败');
-        return false;
-      }
-
-      return response.statusCode == 200;
-    } catch (e, stackTrace) {
-      print('HTTP连接测试失败: $e');
-      print('详细错误信息: $stackTrace');
-      eventHistory.insert(
-        0,
-        'HTTP连接测试失败: $e (${DateTime.now().toIso8601String()})',
-      );
-      if (eventHistory.length > 100) {
-        eventHistory.removeLast();
-      }
-      notifyListeners();
-      return false;
-    }
-  }
+  // 移除所有后端功能函数，只保留UI状态管理
 }
 
 
@@ -1498,18 +185,6 @@ class SyncPage extends StatefulWidget {
 }
 
 class _SyncPageState extends State<SyncPage> {
-  bool autoRefreshDiff = false;
-  Timer? autoRefreshTimer;
-
-  void toggleAutoRefresh() {
-    autoRefreshDiff = !autoRefreshDiff;
-    if (autoRefreshDiff) {
-      autoRefreshTimer = Timer.periodic(Duration(seconds: 30), (_) {});
-    } else {
-      autoRefreshTimer?.cancel();
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<MyAppState>();
@@ -1637,47 +312,18 @@ class _SyncPageState extends State<SyncPage> {
                           onPressed: appState.watchPath.isEmpty
                               ? null
                               : () async {
-                                  final result = await showDialog<bool>(
-                                    context: context,
-                                    barrierDismissible: false,
-                                    builder: (BuildContext context) {
-                                      return UploadProgressDialog(
-                                        uploadFuture: appState.httpUpload(),
-                                      );
-                                    },
+                                  // 模拟上传过程，现在只显示一个提示
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('模拟上传完成'),
+                                      backgroundColor: Color.fromARGB(
+                                        255,
+                                        0,
+                                        0,
+                                        0,
+                                      ),
+                                    ),
                                   );
-
-                                  if (context.mounted) {
-                                    if (result == true) {
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('文件上传成功'),
-                                          backgroundColor: Color.fromARGB(
-                                            255,
-                                            0,
-                                            0,
-                                            0,
-                                          ),
-                                        ),
-                                      );
-                                    } else if (result == false) {
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('文件上传失败，请查看日志'),
-                                          backgroundColor: Color.fromARGB(
-                                            255,
-                                            0,
-                                            0,
-                                            0,
-                                          ),
-                                        ),
-                                      );
-                                    }
-                                  }
                                 },
                           child: const Text('上传服务器缺失的文件'),
                         ),
@@ -1700,36 +346,18 @@ class _SyncPageState extends State<SyncPage> {
                         onPressed: appState.httpHost.isEmpty
                             ? null
                             : () async {
-                                final isConnected = await appState.testHttp(
-                                  appState.httpHost,
-                                  appState.httpPortC,
+                                // 模拟连接测试，现在只显示一个提示
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('模拟连接测试成功'),
+                                    backgroundColor: Color.fromARGB(
+                                      255,
+                                      0,
+                                      0,
+                                      0,
+                                    ),
+                                  ),
                                 );
-
-                                if (isConnected) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('HTTP连接成功'),
-                                      backgroundColor: Color.fromARGB(
-                                        255,
-                                        0,
-                                        0,
-                                        0,
-                                      ),
-                                    ),
-                                  );
-                                } else {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('HTTP连接失败，请检查服务器设置和网络连接'),
-                                      backgroundColor: Color.fromARGB(
-                                        255,
-                                        0,
-                                        0,
-                                        0,
-                                      ),
-                                    ),
-                                  );
-                                }
                               },
                         child: const Text('测试HTTP连接'),
                       ),
@@ -1742,28 +370,8 @@ class _SyncPageState extends State<SyncPage> {
                             appState.watchPath.isEmpty ||
                                 appState.httpHost.isEmpty
                             ? null
-                            : () async {
-                                final diffResult = await appState
-                                    .diffScanResults();
-
-                                if (diffResult.containsKey('error')) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        '比较失败: ${diffResult['error']}',
-                                      ),
-                                      backgroundColor: const Color.fromARGB(
-                                        255,
-                                        0,
-                                        0,
-                                        0,
-                                      ),
-                                    ),
-                                  );
-                                  return;
-                                }
-
-
+                            : () {
+                                // 模拟比较结果，现在只显示一个模拟对话框
                                 showDialog(
                                   context: context,
                                   builder: (BuildContext context) {
@@ -1774,96 +382,37 @@ class _SyncPageState extends State<SyncPage> {
                                         child: ListView(
                                           shrinkWrap: true,
                                           children: [
-                                            if ((diffResult['onlyLocal']
-                                                    as List)
-                                                .isNotEmpty) ...[
-                                              const Text(
-                                                '仅在本地存在:',
-                                                style: TextStyle(
-                                                  fontWeight: FontWeight.bold,
-                                                ),
+                                            const Text(
+                                              '仅在本地存在:',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.bold,
                                               ),
-                                              ...((diffResult['onlyLocal']
-                                                          as List)
-                                                      .map(
-                                                        (file) => ListTile(
-                                                          leading: const Icon(
-                                                            Icons.upload_file,
-                                                            color: Colors.blue,
-                                                          ),
-                                                          title: Text(file),
-                                                        ),
-                                                      ))
-                                                  .toList(),
-                                              const Divider(),
-                                            ],
-
-                                            if ((diffResult['onlyRemote']
-                                                    as List)
-                                                .isNotEmpty) ...[
-                                              const Text(
-                                                '仅在远程存在:',
-                                                style: TextStyle(
-                                                  fontWeight: FontWeight.bold,
-                                                ),
+                                            ),
+                                            const ListTile(
+                                              leading: Icon(
+                                                Icons.upload_file,
+                                                color: Colors.blue,
                                               ),
-                                              ...((diffResult['onlyRemote']
-                                                          as List)
-                                                      .map(
-                                                        (file) => ListTile(
-                                                          leading: const Icon(
-                                                            Icons.download,
-                                                            color: Colors.green,
-                                                          ),
-                                                          title: Text(file),
-                                                        ),
-                                                      ))
-                                                  .toList(),
-                                              const Divider(),
-                                            ],
-
-                                            if ((diffResult['different']
-                                                    as List)
-                                                .isNotEmpty) ...[
-                                              const Text(
-                                                '修改时间不同:',
-                                                style: TextStyle(
-                                                  fontWeight: FontWeight.bold,
-                                                ),
+                                              title: Text('/example/file.txt'),
+                                            ),
+                                            const Divider(),
+                                            
+                                            const Text(
+                                              '修改时间不同:',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.bold,
                                               ),
-                                              ...((diffResult['different'] as List).map(
-                                                (item) => ListTile(
-                                                  leading: const Icon(
-                                                    Icons.update,
-                                                    color: Colors.orange,
-                                                  ),
-                                                  title: Text(
-                                                    (item as Map)['path'],
-                                                  ),
-                                                  subtitle: Text(
-                                                    '本地: ${(item['localModified'] as String).split('T').first} '
-                                                    '远程: ${(item['remoteModified'] as String).split('T').first}',
-                                                  ),
-                                                ),
-                                              )).toList(),
-                                            ],
-
-                                            if ((diffResult['onlyLocal']
-                                                        as List)
-                                                    .isEmpty &&
-                                                (diffResult['onlyRemote']
-                                                        as List)
-                                                    .isEmpty &&
-                                                (diffResult['different']
-                                                        as List)
-                                                    .isEmpty) ...[
-                                              const Text(
-                                                '没有发现差异',
-                                                style: TextStyle(
-                                                  fontStyle: FontStyle.italic,
-                                                ),
+                                            ),
+                                            const ListTile(
+                                              leading: Icon(
+                                                Icons.update,
+                                                color: Colors.orange,
                                               ),
-                                            ],
+                                              title: Text('/another/file.txt'),
+                                              subtitle: Text(
+                                                '本地: 2023-01-01 远程: 2023-01-02',
+                                              ),
+                                            ),
                                           ],
                                         ),
                                       ),
@@ -1962,7 +511,7 @@ class WatcherPage extends StatefulWidget {
 class _WatcherPageState extends State<WatcherPage> {
   @override
   void dispose() {
-    context.read<MyAppState>()._watcher.stopWatch();
+    // 不再调用_stopWatch，因为后端逻辑已移除
     super.dispose();
   }
 
@@ -1978,15 +527,13 @@ class _WatcherPageState extends State<WatcherPage> {
             Text('监控路径: ${appState.watchPath}'),
             const SizedBox(height: 16),
             ElevatedButton(
-              onPressed: () async {
-                if (appState.watchPath.isNotEmpty) {
-                  final scanResult = await appState.scanDirWithCgo(appState.watchPath);
-                  final snackBar = SnackBar(
-                    content: Text('CGO扫描完成，共找到 ${scanResult['allFiles'].length + scanResult['textFiles'].length} 个文件'),
-                    backgroundColor: Colors.green,
-                  );
-                  ScaffoldMessenger.of(context).showSnackBar(snackBar);
-                }
+              onPressed: () {
+                // 显示模拟扫描结果
+                final snackBar = SnackBar(
+                  content: Text('模拟CGO扫描完成，找到若干文件'),
+                  backgroundColor: Colors.green,
+                );
+                ScaffoldMessenger.of(context).showSnackBar(snackBar);
               },
               child: const Text('使用CGO扫描目录'),
             ),
@@ -2079,34 +626,15 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
 
     _logManager.addListener(_logListener);
 
-    widget.uploadFuture
-        .then((success) {
-          if (mounted) {
-            setState(() {
-              _isCompleted = true;
-              _isSuccess = success;
-            });
-
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (_scrollController.hasClients) {
-                _scrollController.animateTo(
-                  _scrollController.position.maxScrollExtent,
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeOut,
-                );
-              }
-            });
-          }
-        })
-        .catchError((error) {
-          if (mounted) {
-            setState(() {
-              _isCompleted = true;
-              _isSuccess = false;
-            });
-            _log('上传过程中发生未捕获的错误: $error');
-          }
+    // 模拟上传完成
+    Future.delayed(Duration(seconds: 2), () {
+      if (mounted) {
+        setState(() {
+          _isCompleted = true;
+          _isSuccess = true;
         });
+      }
+    });
   }
 
   @override
@@ -2196,4 +724,3 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
     );
   }
 }
-// 劳资肝了一个月燃尽了，我造密码了个丑比
