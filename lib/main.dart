@@ -2,12 +2,15 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:collection';
 import 'dart:math';
+import 'dart:ffi';
+import 'dart:ffi' as ffi;
 import 'watcher.dart';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
+import 'synaesthesia_ffi.dart';
 
 enum SyncMode { server, client }
 
@@ -15,7 +18,7 @@ void main() {
   runApp(const MyApp());
 }
 
-//日志管理
+
 class LogManager {
   static final LogManager _instance = LogManager._internal();
   factory LogManager() => _instance;
@@ -24,7 +27,7 @@ class LogManager {
   final ListQueue<String> _logs = ListQueue<String>();
   final Set<VoidCallback> _listeners = <VoidCallback>{};
 
-  static const int maxLogLines = 100; // 最大日志行数
+  static const int maxLogLines = 100;
 
   void log(String message) {
     final timestamp = DateTime.now().toString().split('.').first;
@@ -58,13 +61,13 @@ class LogManager {
   }
 }
 
-// 用于输出到UI
+
 void _log(String message) {
   LogManager().log(message);
   print(message);
 }
 
-// 格式化字节数
+
 String formatBytes(int bytes, {int decimalPlaces = 2}) {
   if (bytes == 0) return '0 B';
 
@@ -107,7 +110,7 @@ class MyApp extends StatelessWidget {
   }
 }
 
-//页面定义
+
 class Pages extends StatelessWidget {
   const Pages({super.key});
 
@@ -134,7 +137,7 @@ class Pages extends StatelessWidget {
   }
 }
 
-//APP本体的功能以及服务调用
+
 class MyAppState extends ChangeNotifier {
   var currentIdx = 0;
   String lastEvent = "No event yet";
@@ -148,19 +151,14 @@ class MyAppState extends ChangeNotifier {
   Map<String, dynamic>? _cachedRemoteFiles;
   DateTime? _localCacheTime;
   DateTime? _remoteCacheTime;
-  static const Duration cacheDuration = Duration(seconds: 30); // 30秒缓存时间
+  static const Duration cacheDuration = Duration(seconds: 30);
 
   void setSyncMode(SyncMode mode) {
     syncMode = mode;
     notifyListeners();
   }
 
-  // HTTP服务器
-  bool isHTTPRunning = false;
-  int httpPort = 8080;
-  HttpServer? httpServer;
 
-  // HTTP客户端
   String httpHost = 'localhost';
   int httpPortC = 8080;
 
@@ -187,7 +185,6 @@ class MyAppState extends ChangeNotifier {
         clearFileCache();
       }
     });
-    getLocalIPAddress();
   }
 
   void setWatchPath(String path) {
@@ -220,7 +217,7 @@ class MyAppState extends ChangeNotifier {
 
       for (final interface in interfaces) {
         for (final address in interface.addresses) {
-          // 选择一个非回环的IPv4地址
+
           if (address.type == InternetAddressType.IPv4 &&
               !address.isLoopback &&
               !address.isLinkLocal) {
@@ -235,7 +232,7 @@ class MyAppState extends ChangeNotifier {
     }
   }
 
-  // 启动HTTP服务器
+
   void startHTTP() async {
     if (watchPath.isEmpty) {
       print('请先选择要同步的目录');
@@ -271,11 +268,11 @@ class MyAppState extends ChangeNotifier {
       try {
         print('开始处理文件上传请求，路径: $path');
 
-        // 确保路径正确连接，处理路径分隔符问题
+
         final normalizedPath = path.startsWith('/') ? path.substring(1) : path;
         print('标准化路径: $normalizedPath');
 
-        // 构造完整文件路径
+
         final filePath = '$watchPath${Platform.pathSeparator}$normalizedPath'
             .replaceAll('/', Platform.pathSeparator)
             .replaceAll('\\', Platform.pathSeparator)
@@ -288,7 +285,7 @@ class MyAppState extends ChangeNotifier {
         print('准备接收上传文件: $filePath');
         print('监控路径: $watchPath');
 
-        // 检查父目录是否存在，如果不存在则创建
+
         final parentDir = file.parent;
         print('父目录路径: ${parentDir.path}');
 
@@ -309,7 +306,7 @@ class MyAppState extends ChangeNotifier {
           return;
         }
 
-        // 流式写入文件
+
         try {
           print('开始流式写入文件...');
           sink = file.openWrite();
@@ -328,7 +325,7 @@ class MyAppState extends ChangeNotifier {
           rethrow;
         }
 
-        // 返回成功响应
+
         request.response
           ..statusCode = HttpStatus.ok
           ..headers.set('Content-Type', 'text/plain; charset=utf-8')
@@ -337,7 +334,7 @@ class MyAppState extends ChangeNotifier {
 
         print('文件上传完成: $filePath');
       } catch (e, stackTrace) {
-        // 关闭
+
         await sink?.close();
         print('文件上传过程中发生未处理的异常: $e');
         print('详细堆栈信息: $stackTrace');
@@ -354,7 +351,7 @@ class MyAppState extends ChangeNotifier {
     }
 
     try {
-      // 绑定所有接口
+
       httpServer = await HttpServer.bind(InternetAddress.anyIPv4, httpPort);
 
       httpServer!.listen((HttpRequest request) async {
@@ -374,25 +371,25 @@ class MyAppState extends ChangeNotifier {
 
         final path = request.uri.path;
 
-        // API
+
         if (path.startsWith('/api/')) {
           await _apiRequest(request, path);
           return;
         }
 
-        // 文件列表
+
         if (path == '/.scan_result.json') {
           await _jsonRequest(request);
           return;
         }
 
-        // PUT
+
         if (request.method == 'PUT') {
           await _fileUpload(request, path);
           return;
         }
 
-        // 根路径
+
         if (path == '/' || path.isEmpty) {
           final dir = Directory(watchPath);
           final entities = await dir.list().toList();
@@ -419,7 +416,7 @@ class MyAppState extends ChangeNotifier {
             normalizedPath = normalizedPath.substring(1);
           }
 
-          // 构造文件路径
+
           final filePath = '$watchPath${Platform.pathSeparator}$normalizedPath'
               .replaceAll('/', Platform.pathSeparator)
               .replaceAll('\\', Platform.pathSeparator)
@@ -434,14 +431,14 @@ class MyAppState extends ChangeNotifier {
 
           if (await file.exists()) {
             print('文件存在，开始传输: $filePath');
-            // 响应头
+
             request.response.headers.contentType = _getContentType(filePath);
 
-            // Content-Length头
+
             final length = await file.length();
             request.response.headers.set('Content-Length', length.toString());
 
-            // 发送
+
             await request.response.addStream(file.openRead());
             await request.response.close();
             print('文件传输完成: $filePath');
@@ -464,14 +461,14 @@ class MyAppState extends ChangeNotifier {
       isHTTPRunning = true;
       notifyListeners();
       print('HTTP服务器已启动，端口: $httpPort');
-      // 更新本机IP
+
       getLocalIPAddress();
     } catch (e) {
       print('启动HTTP服务器失败: $e');
     }
   }
 
-  // 根据后缀确定内容类型
+
   ContentType _getContentType(String filePath) {
     final lowerPath = filePath.toLowerCase();
     if (lowerPath.endsWith('.json')) {
@@ -493,7 +490,7 @@ class MyAppState extends ChangeNotifier {
     }
   }
 
-  // 处理API
+
   Future<void> _apiRequest(HttpRequest request, String path) async {
     if (path == '/api/file-list') {
       await _fileListRequest(request);
@@ -505,7 +502,7 @@ class MyAppState extends ChangeNotifier {
     }
   }
 
-  // 处理文件列表
+
   Future<void> _jsonRequest(HttpRequest request) async {
     try {
       final fileMap = await _scanDir(watchPath);
@@ -524,7 +521,7 @@ class MyAppState extends ChangeNotifier {
     }
   }
 
-  // 处理文件列表API
+
   Future<void> _fileListRequest(HttpRequest request) async {
     try {
       final fileMap = await _scanDir(watchPath);
@@ -543,7 +540,7 @@ class MyAppState extends ChangeNotifier {
     }
   }
 
-  // 扫描目录结构
+
   Future<Map<String, dynamic>> _scanDir(String rootPath) async {
     final fileMap = <String, dynamic>{};
     final dir = Directory(rootPath);
@@ -556,7 +553,7 @@ class MyAppState extends ChangeNotifier {
     return fileMap;
   }
 
-  // 生成API响应
+
   Future<void> _scanDirForApi(
     Directory dir,
     String rootPath,
@@ -564,7 +561,7 @@ class MyAppState extends ChangeNotifier {
   ) async {
     try {
       await for (final FileSystemEntity entity in dir.list()) {
-        // 相对路径
+
         final relativePath = entity.path
             .replaceFirst(rootPath, '')
             .replaceAll('\\', '/');
@@ -607,7 +604,7 @@ class MyAppState extends ChangeNotifier {
     }
   }
 
-  // 停止HTTP服务器
+
   void stopHTTP() {
     httpServer?.close();
     isHTTPRunning = false;
@@ -616,7 +613,45 @@ class MyAppState extends ChangeNotifier {
     print('HTTP服务器已停止');
   }
 
-  // 使用HTTP同步
+
+  Future<Map<String, dynamic>> scanDirWithCgo(String rootPath) async {
+    try {
+
+      final tempConfig = await File('${Directory.systemTemp.path}/syna_config.json').create();
+      await tempConfig.writeAsString(jsonEncode({
+        'uploadDir': rootPath,
+        'useCompare': true,
+      }));
+
+
+      final initResult = SynaesthesiaLibrary.instance.synaInit(tempConfig.path.toNativeUtf8().cast());
+      if (initResult != 0) {
+        print('CGO初始化失败: $initResult');
+        await tempConfig.delete();
+        return <String, dynamic>{};
+      }
+
+
+      final scanResultPtr = SynaesthesiaLibrary.instance.synaScan();
+      final scanResultStr = scanResultPtr.cast<Utf8>().toDartString();
+
+      await tempConfig.delete();
+
+
+      final result = jsonDecode(scanResultStr);
+      if (result.containsKey('error')) {
+        print('CGO扫描错误: ${result['error']}');
+        return <String, dynamic>{};
+      }
+
+      return result;
+    } catch (e) {
+      print('CGO扫描异常: $e');
+      return <String, dynamic>{};
+    }
+  }
+
+
   Future<bool> httpUpload() async {
     LogManager().clearLogs();
     _log('开始上传文件到服务器');
@@ -635,13 +670,13 @@ class MyAppState extends ChangeNotifier {
         return false;
       }
 
-      // 获取服务器上缺失的文件列表（仅在本地存在的文件）
+
       final onlyLocal = List<String>.from(diffResult['onlyLocal'] as List);
       final different = List<Map<String, dynamic>>.from(
         diffResult['different'] as List,
       );
 
-      // 合并仅本地存在的文件和修改时间不同的文件
+
       final fileUpload = <String>[];
       fileUpload.addAll(onlyLocal);
       fileUpload.addAll(different.map((item) => item['path'] as String));
@@ -664,14 +699,13 @@ class MyAppState extends ChangeNotifier {
       bool success = true;
       int upCount = 0;
 
-      // 上传缺失文件
+
       for (final filePath in fileUpload) {
         try {
           final normalizedRelativePath = filePath.startsWith('/')
               ? filePath.substring(1)
               : filePath;
           final fullPath = '$watchPath/$normalizedRelativePath'
-              .replaceAll('//', '/')
               .replaceAll('\\', '/');
           final file = File(fullPath);
 
@@ -689,45 +723,45 @@ class MyAppState extends ChangeNotifier {
             continue;
           }
 
-          // 构造URL
+
           final urlPath = filePath.startsWith('/') ? filePath : '/$filePath';
           final url = Uri.http('$httpHost:$httpPortC', urlPath);
 
-          // 进度显示
+
           final fileName = file.uri.pathSegments.last;
           _log('开始流式上传文件: $fileName 到 $url');
 
-          // 请求头
+
           final Map<String, String> headers = {};
           if (httpUser.isNotEmpty && httpPwd.isNotEmpty) {
             final auth = base64Encode(utf8.encode('$httpUser:$httpPwd'));
             headers['authorization'] = 'Basic $auth';
           }
 
-          // 流式上传
+
           final client = HttpClient();
           final request = await client.openUrl('PUT', url);
 
-          // 设置头
+
           headers.forEach((key, value) {
             request.headers.set(key, value);
           });
 
-          // 设置长度
+
           final length = await file.length();
           request.headers.set('Content-Length', length.toString());
 
-          // 流式发送内容
+
           final stream = file.openRead();
           int bytesSent = 0;
 
-          // 创建带进度监控的流
+
           final progressStream = stream.transform(
             StreamTransformer<List<int>, List<int>>.fromHandlers(
               handleData: (data, sink) {
                 bytesSent += data.length;
                 if (bytesSent % (1024 * 1024) == 0) {
-                  // 每MB显示一次进度
+
                   final progress = length > 0 ? (bytesSent / length) * 100 : 0;
                   _log(
                     '上传进度 [$fileName]: ${progress.toStringAsFixed(1)}% ($bytesSent/$length 字节)',
@@ -810,7 +844,7 @@ class MyAppState extends ChangeNotifier {
     }
   }
 
-  // 下载远程缺失的文件（流式传输版本，带文件名的进度显示，但是出现了点问题暂时搁置，目前没有实际作用）
+
   Future<bool> httpDownload() async {
     if (watchPath.isEmpty) {
       print('请先选择本地目录');
@@ -930,20 +964,20 @@ class MyAppState extends ChangeNotifier {
               continue;
             }
 
-            // 写入文件
+
             final totalBytes = response.contentLength ?? 0;
             print('文件大小: $totalBytes 字节');
 
             final fileSink = localFile.openWrite();
             int bytesReceived = 0;
 
-            // 创建带进度监控的流
+
             final progressStream = response.transform(
               StreamTransformer<List<int>, List<int>>.fromHandlers(
                 handleData: (data, sink) {
                   bytesReceived += data.length;
                   if (totalBytes > 0 && bytesReceived % (1024 * 1024) == 0) {
-                    // 每MB显示一次进度
+
                     final progress = (bytesReceived / totalBytes) * 100;
                     print(
                       '下载进度 [$fileName]: ${progress.toStringAsFixed(1)}% ($bytesReceived/$totalBytes 字节)',
@@ -979,7 +1013,7 @@ class MyAppState extends ChangeNotifier {
             success = false;
           } else {
             print('文件下载失败，状态码: ${response.statusCode} ($fileName)');
-            // 读取错误响应体
+
             final errorBody = await response.transform(utf8.decoder).join();
             print('错误响应内容: $errorBody');
             eventHistory.insert(
@@ -1032,7 +1066,7 @@ class MyAppState extends ChangeNotifier {
 
   Timer? _diffTimer;
 
-  // 定时比较
+
 
   Future<Map<String, dynamic>> diffScanResults() async {
     if (watchPath.isEmpty) {
@@ -1074,13 +1108,13 @@ class MyAppState extends ChangeNotifier {
       for (final path in commonPaths) {
         final localFile = localFiles[path]!;
         final remoteFile = remoteFiles[path]!;
-        //跳过目录
+
         if (remoteFile['type'] == 'file' && localFile is File) {
           try {
             final localModified = localFile.statSync().modified;
             final remoteModified = DateTime.parse(remoteFile['modified']);
 
-            // 如果修改时间差异超过1秒，认为是不同的
+
             if (localModified.difference(remoteModified).inSeconds.abs() > 1) {
               different.add({
                 'path': path,
@@ -1128,7 +1162,7 @@ class MyAppState extends ChangeNotifier {
         _localCacheTime != null &&
         DateTime.now().difference(_localCacheTime!) < cacheDuration) {
       print('使用本地文件缓存，缓存时间: $_localCacheTime');
-      // 将缓存的 Map<String, dynamic> 转换回 Map<String, File>
+
       final Map<String, File> fileMap = {};
       _cachedLocalFiles!.forEach((path, info) {
         if (info is File) {
@@ -1143,7 +1177,7 @@ class MyAppState extends ChangeNotifier {
     final dir = Directory(watchPath);
 
     if (!await dir.exists()) {
-      // 更新缓存
+
       _cachedLocalFiles = {};
       _localCacheTime = DateTime.now();
       return files;
@@ -1154,8 +1188,7 @@ class MyAppState extends ChangeNotifier {
         if (entity is File) {
           final relativePath = entity.path
               .replaceFirst(watchPath, '')
-              .replaceAll('\\', '/')
-              .replaceAll('//', '/');
+              .replaceAll('\\', '/');
           final normalizedPath = relativePath.startsWith('/')
               ? relativePath
               : '/$relativePath';
@@ -1166,7 +1199,7 @@ class MyAppState extends ChangeNotifier {
       print('扫描本地文件失败: $e');
     }
 
-    // 更新缓存
+
     _cachedLocalFiles = Map<String, dynamic>.from(files);
     _localCacheTime = DateTime.now();
     print('更新本地文件缓存，文件数量: ${files.length}');
@@ -1182,7 +1215,7 @@ class MyAppState extends ChangeNotifier {
     print('文件缓存已清除');
   }
 
-  // 手动刷新缓存
+
   Future<void> refreshFileCache() async {
     print('手动刷新文件缓存');
     clearFileCache();
@@ -1244,12 +1277,12 @@ class MyAppState extends ChangeNotifier {
             print('第一个文件信息: key=$firstKey, value=${data[firstKey]}');
           }
 
-          // 更新缓存
+
           _cachedRemoteFiles = data;
           _remoteCacheTime = DateTime.now();
           print('更新远程文件缓存，文件数量: ${data.length}');
 
-          // 确保路径格式一致，都以 '/' 开头
+
           final normalizedData = <String, dynamic>{};
           data.forEach((path, info) {
             final normalizedPath = path.startsWith('/') ? path : '/$path';
@@ -1276,7 +1309,7 @@ class MyAppState extends ChangeNotifier {
     }
   }
 
-  // 从远程文件列表中提取文件（排除目录）
+
   Map<String, dynamic> _extractRemoteFilesOnly(
     Map<String, dynamic> remoteFiles,
   ) {
@@ -1291,7 +1324,7 @@ class MyAppState extends ChangeNotifier {
     return fileMap;
   }
 
-  // 从目录树中提取所有文件路径
+
   List<String> _extPath(Map<String, dynamic> tree) {
     final paths = <String>[];
 
@@ -1314,7 +1347,7 @@ class MyAppState extends ChangeNotifier {
     return paths;
   }
 
-  // 比较共同文件的修改时间
+
   Future<List<Map<String, dynamic>>> _compare(
     Map<String, dynamic> localData,
     Map<String, dynamic> remoteData,
@@ -1322,7 +1355,7 @@ class MyAppState extends ChangeNotifier {
   ) async {
     final different = <Map<String, dynamic>>[];
 
-    // 路径到节点的映射
+
     final localPathMap = _createMap(localData['directoryTree'] ?? {});
     final remotePathMap = _createMap(remoteData['directoryTree'] ?? {});
 
@@ -1351,7 +1384,7 @@ class MyAppState extends ChangeNotifier {
     return different;
   }
 
-  // 创建路径到节点的映射
+
   Map<String, Map<String, dynamic>> _createMap(Map<String, dynamic> tree) {
     final pathMap = <String, Map<String, dynamic>>{};
 
@@ -1376,7 +1409,7 @@ class MyAppState extends ChangeNotifier {
     return pathMap;
   }
 
-  // 测试HTTP连接
+
   Future<bool> testHttp(String host, int port) async {
     try {
       final url = Uri.http('$host:$port', '/');
@@ -1456,7 +1489,7 @@ class MyAppState extends ChangeNotifier {
   }
 }
 
-// 同步页面
+
 class SyncPage extends StatefulWidget {
   const SyncPage({super.key});
 
@@ -1488,7 +1521,7 @@ class _SyncPageState extends State<SyncPage> {
           children: [
             Text('当前监控路径: ${appState.watchPath}'),
 
-            // 模式选择
+
             const Text('选择模式:', style: TextStyle(fontWeight: FontWeight.bold)),
             Row(
               children: [
@@ -1534,7 +1567,7 @@ class _SyncPageState extends State<SyncPage> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       SizedBox(
-                        width: double.infinity,  // 修改为 double.infinity 避免计算宽度问题
+                        width: double.infinity,
                         child: ElevatedButton(
                           onPressed: () async {
                             String? selectedDirectory = await FilePicker
@@ -1553,74 +1586,25 @@ class _SyncPageState extends State<SyncPage> {
                       ),
                       const SizedBox(height: 16),
 
-                      TextField(
-                        decoration: const InputDecoration(
-                          labelText: 'HTTP端口',
-                          hintText: '请输入HTTP端口 (默认: 8080)',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.number,
-                        onChanged: (value) {
-                          final port = int.tryParse(value);
-                          if (port != null) {
-                            appState.httpPort = port;
-                          }
-                        },
-                      ),
 
-                      const SizedBox(height: 16),
-
-                      const Text(
-                        'HTTP基本认证 (可选):',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-
-                      TextField(
-                        decoration: const InputDecoration(
-                          labelText: '用户名',
-                          hintText: '请输入用户名（默认user）',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (value) => appState.httpUser = value,
-                      ),
-
-                      const SizedBox(height: 8),
-
-                      TextField(
-                        decoration: const InputDecoration(
-                          labelText: '密码',
-                          hintText: '请输入密码（默认pwd123）',
-                          border: OutlineInputBorder(),
-                        ),
-                        obscureText: true,
-                        onChanged: (value) => appState.httpPwd = value,
-                      ),
-
-                      // 显示服务器状态信息
-                      if (appState.isHTTPRunning) ...[
+                      if (false) ...[
                         const SizedBox(height: 16),
                         const Divider(),
                         const Text(
-                          'HTTP服务器状态: 运行中',
+                          'HTTP服务器状态: 已移除',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
-                            color: Colors.green,
+                            color: Colors.orange,
                           ),
                         ),
-                        const SizedBox(height: 8),
-                        Text('HTTP服务器端口: ${appState.httpPort}'),
-                        Text('用户名: ${appState.httpUser}'),
-                        Text('密码: ${appState.httpPwd}'),
-                        Text(
-                          '访问地址: http://${appState.localIPAddress}:${appState.httpPort}',
-                        ),
+                        const Text('HTTP服务器功能已暂时移除'),
                       ],
                     ],
                   ),
                 ),
               ),
             ] else ...[
-              // 客户端模式控件
+
               Card(
                 elevation: 2,
                 child: Padding(
@@ -1629,7 +1613,7 @@ class _SyncPageState extends State<SyncPage> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       SizedBox(
-                        width: double.infinity,  // 修改为 double.infinity 避免计算宽度问题
+                        width: double.infinity,
                         child: ElevatedButton(
                           onPressed: () async {
                             String? selectedDirectory = await FilePicker
@@ -1648,7 +1632,7 @@ class _SyncPageState extends State<SyncPage> {
                       ),
                       const SizedBox(height: 16),
                       SizedBox(
-                        width: double.infinity,  // 修改为 double.infinity 避免计算宽度问题
+                        width: double.infinity,
                         child: ElevatedButton(
                           onPressed: appState.watchPath.isEmpty
                               ? null
@@ -1700,7 +1684,7 @@ class _SyncPageState extends State<SyncPage> {
                       ),
                       const SizedBox(height: 12),
 
-                      //先让他暂时歇在这里
+
                       /*ElevatedButton(
                 onPressed: appState.watchPath.isEmpty
                   ? null
@@ -1752,7 +1736,7 @@ class _SyncPageState extends State<SyncPage> {
 
                       const SizedBox(height: 12),
 
-                      // 检查差异按钮
+
                       ElevatedButton(
                         onPressed:
                             appState.watchPath.isEmpty ||
@@ -1779,7 +1763,7 @@ class _SyncPageState extends State<SyncPage> {
                                   return;
                                 }
 
-                                // 显示差异结果
+
                                 showDialog(
                                   context: context,
                                   builder: (BuildContext context) {
@@ -1967,7 +1951,7 @@ class _SyncPageState extends State<SyncPage> {
   }
 }
 
-//文件监视页面
+
 class WatcherPage extends StatefulWidget {
   const WatcherPage({super.key});
 
@@ -1992,6 +1976,20 @@ class _WatcherPageState extends State<WatcherPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('监控路径: ${appState.watchPath}'),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () async {
+                if (appState.watchPath.isNotEmpty) {
+                  final scanResult = await appState.scanDirWithCgo(appState.watchPath);
+                  final snackBar = SnackBar(
+                    content: Text('CGO扫描完成，共找到 ${scanResult['allFiles'].length + scanResult['textFiles'].length} 个文件'),
+                    backgroundColor: Colors.green,
+                  );
+                  ScaffoldMessenger.of(context).showSnackBar(snackBar);
+                }
+              },
+              child: const Text('使用CGO扫描目录'),
+            ),
             const SizedBox(height: 16),
             Expanded(
               child: SingleChildScrollView(
@@ -2036,7 +2034,7 @@ class _WatcherPageState extends State<WatcherPage> {
   }
 }
 
-//上传进度对话框
+
 class UploadProgressDialog extends StatefulWidget {
   final Future<bool> uploadFuture;
 
@@ -2198,3 +2196,4 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
     );
   }
 }
+// 劳资肝了一个月燃尽了，我造密码了个丑比

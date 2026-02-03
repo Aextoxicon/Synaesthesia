@@ -1,49 +1,87 @@
 package main
 
+/*
+#include <stdlib.h>
+*/
+import "C"
 import (
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Config struct {
-	UploadDir   string   `json:"uploadDir"`
-	ApiToken    string   `json:"apiToken"`
-	//Port        int      `json:"port"`
+	UploadDir  string `json:"uploadDir"`
+	UseCompare bool   `json:"useCompare"`
+	ApiToken   string `json:"apiToken"`
+	Port       int    `json:"port"`
+	UseToken   bool   `json:"useToken"`
 }
 
 var config Config
+var httpServer *http.Server
+var mu sync.RWMutex
 
-func loadConfig() {
-    data, err := os.ReadFile("config.json")
-    if err != nil {
-        log.Printf("load conf file failed: %v", err)
-        config.Port = 9178
-    } else {
-        if err := json.Unmarshal(data, &config); err != nil {
-            log.Fatalf("conf format is not true: %v", err)
-        }
-    }
+func synaInit(configPath *C.char) C.int {
+	mu.Lock()
+	defer mu.Unlock()
 
-    if _, err := os.Stat(config.UploadDir); os.IsNotExist(err) {
-        log.Fatalf("upload dir is unwritable: %s", config.UploadDir)
-    }
-    testFile := filepath.Join(config.UploadDir, ".write_test")
-    if err := os.WriteFile(testFile, []byte{}, 0644); err != nil {
-        log.Fatalf("upload dir is unwritable: %v", err)
-    }
-    os.Remove(testFile)
+	path := C.GoString(configPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("load conf file failed: %v", err)
+		config.UploadDir = ""
+		config.UseCompare = false
+		config.Port = 9178
+		config.UseToken = false
+	} else {
+		if err := json.Unmarshal(data, &config); err != nil {
+			log.Printf("conf format is not true: %v", err)
+			return -1
+		}
+		if config.Port == 0 {
+			config.Port = 9178
+		}
+
+	}
+
+	if _, err := os.Stat(config.UploadDir); os.IsNotExist(err) {
+		log.Printf("upload dir is unwritable: %s", config.UploadDir)
+		return -2
+	}
+	testFile := filepath.Join(config.UploadDir, ".write_test")
+	if err := os.WriteFile(testFile, []byte{}, 0644); err != nil {
+		log.Printf("upload dir is unwritable: %v", err)
+		return -2
+	}
+	os.Remove(testFile)
+
+	if config.UseCompare {
+		synaDir := filepath.Join(config.UploadDir, ".syna")
+		if err := os.MkdirAll(synaDir, 0755); err != nil {
+			log.Printf("failed to create .syna directory: %v", err)
+			return -2
+		}
+
+		originDir := filepath.Join(synaDir, "origin")
+		if err := os.MkdirAll(originDir, 0755); err != nil {
+			log.Printf("failed to create .syna/origin directory: %v", err)
+			return -2
+		}
+	}
+
+	return 0
 }
 
 func tokenAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -69,7 +107,7 @@ func tokenAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func upload(w http.ResponseWriter, r *http.Request) {
+func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -83,7 +121,6 @@ func upload(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	filename := sanitizeFilename(header.Filename)
-
 	filePath := filepath.Join(config.UploadDir, filename)
 
 	out, err := os.Create(filePath)
@@ -105,7 +142,7 @@ func upload(w http.ResponseWriter, r *http.Request) {
 	log.Printf("file upload succeed: %s", filename)
 }
 
-func download(w http.ResponseWriter, r *http.Request) {
+func downloadHandler(w http.ResponseWriter, r *http.Request) {
 	filename := filepath.Base(r.URL.Path)
 
 	validName := regexp.MustCompile(`^[a-zA-Z0-9._@\-]+$`).MatchString(filename)
@@ -132,32 +169,12 @@ func download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ext := strings.ToLower(filepath.Ext(filename))
-	contentType := mimeTypes[ext]
-	if contentType == "" {
-		contentType = mime.TypeByExtension(ext)
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-	}
-	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, urlEncodeFileName(filename)))
-
 	http.ServeFile(w, r, filePath)
 }
 
-func sanitizeFilename(name string) string {
-	// 移除或替换字符 name = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`).ReplaceAllString(name, "_")
-	name = strings.TrimPrefix(name, "..")
-	name = strings.TrimPrefix(name, "/")
-	return name
-}
-
-func urlEncodeFileName(name string) string {
-	return strings.ReplaceAll(url.QueryEscape(name), "+", "%20")
-}
-
-func list(w http.ResponseWriter, r *http.Request) {
+func listHandler(w http.ResponseWriter, r *http.Request) {
 	entries, err := os.ReadDir(config.UploadDir)
 	if err != nil {
 		log.Printf("read dir failed: %v", err)
@@ -177,6 +194,7 @@ func list(w http.ResponseWriter, r *http.Request) {
 		files = append(files, map[string]interface{}{
 			"filename": entry.Name(),
 			"size":     info.Size(),
+			"modTime":  info.ModTime().Format("2006-01-02 15:04:05"),
 		})
 	}
 
@@ -184,14 +202,185 @@ func list(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"files": files})
 }
 
-func main() {
-	loadConfig()
+func sanitizeFilename(name string) string {
+	name = strings.TrimPrefix(name, "..")
+	name = strings.TrimPrefix(name, "/")
+	return name
+}
 
-	http.HandleFunc("/upload", tokenAuth(upload))
-	http.HandleFunc("/list", list)
+func urlEncodeFileName(name string) string {
+	return strings.ReplaceAll(url.QueryEscape(name), "+", "%20")
+}
+
+func synaGetUploadDir() *C.char {
+	mu.RLock()
+	defer mu.RUnlock()
+	return C.CString(config.UploadDir)
+}
+
+type FileState struct {
+	Name    string    `json:"name"`
+	Size    int64     `json:"size"`
+	ModTime time.Time `json:"modTime"`
+	SHA256  string    `json:"sha256,omitempty"`
+}
+
+func calcSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func synaProcessFiles(files []FileState) ([]FileState, error) {
+	var result []FileState
+
+	for _, file := range files {
+		absPath := filepath.Join(config.UploadDir, file.Name)
+
+		info, err := os.Stat(absPath)
+		if err != nil {
+			continue
+		}
+
+		newFileState := FileState{
+			Name:    file.Name,
+			Size:    file.Size,
+			ModTime: info.ModTime(),
+		}
+
+		if config.UseCompare {
+			sha256Hash, err := calcSHA256(absPath)
+			if err != nil {
+				continue
+			}
+			newFileState.SHA256 = sha256Hash
+		}
+
+		result = append(result, newFileState)
+	}
+
+	return result, nil
+}
+
+func synaScan() *C.char {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	entries, err := os.ReadDir(config.UploadDir)
+	if err != nil {
+		log.Printf("scan dir failed: %v", err)
+		errorResponse := `{"error": "扫描目录失败", "status": "error"}`
+		return C.CString(errorResponse)
+	}
+
+	var allFiles []FileState
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		fileState := FileState{
+			Name:    entry.Name(),
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		}
+
+		if config.UseCompare {
+			absPath := filepath.Join(config.UploadDir, fileState.Name)
+			sha256Hash, err := calcSHA256(absPath)
+			if err == nil {
+				fileState.SHA256 = sha256Hash
+			}
+		}
+
+		allFiles = append(allFiles, fileState)
+	}
+
+	processedAllFiles, err := synaProcessFiles(allFiles)
+	if err != nil {
+		log.Printf("process all files failed: %v", err)
+		errorResponse := `{"error": "处理文件失败", "status": "error"}`
+		return C.CString(errorResponse)
+	}
+
+	response := map[string]interface{}{
+		"allFiles": processedAllFiles,
+		"status":   "success",
+	}
+
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("marshal response failed: %v", err)
+		errorResponse := `{"error": "生成响应失败", "status": "error"}`
+		return C.CString(errorResponse)
+	}
+
+	return C.CString(string(jsonResponse))
+}
+
+func synaStartHttpServer() C.int {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config.UploadDir == "" {
+		return -1
+	}
 
 	addr := fmt.Sprintf(":%d", config.Port)
-	log.Printf("the backend servise running on http://localhost%s", addr)
-	log.Printf("work dir is: %s", config.UploadDir)
-	log.Fatal(http.ListenAndServe(addr, nil))
+	httpServer = &http.Server{Addr: addr}
+
+	if config.UseToken {
+		http.HandleFunc("/upload", tokenAuth(uploadHandler))
+	} else {
+		http.HandleFunc("/upload", uploadHandler)
+	}
+
+	http.HandleFunc("/list", listHandler)
+	http.HandleFunc("/download/", downloadHandler)
+
+	go func() {
+		log.Printf("HTTP server running on http://localhost：%s", addr)
+		log.Printf("Work dir is: %s", config.UploadDir)
+		if config.UseToken {
+			log.Printf("Token authentication is enabled")
+		} else {
+			log.Printf("Token authentication is disabled")
+		}
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
+
+	return 0
 }
+
+func synaStopHttpServer() C.int {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if httpServer != nil {
+		err := httpServer.Close()
+		if err != nil {
+			return -1
+		}
+		httpServer = nil
+	}
+	return 0
+}
+
+func main() {}
