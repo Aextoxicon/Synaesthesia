@@ -110,7 +110,7 @@ jobs:
 
       - name: Package Windows build
         run: |
-          Compress-Archive -Path "build/windows/x64/runner/Release/" -DestinationPath "eureka_win.zip"
+          Compress-Archive -Path "build/windows/x64/runner/Release/" -DestinationPath "synaesthesia_win.zip"
 
       - name: Check if release already exists
         id: check_release
@@ -169,7 +169,7 @@ jobs:
             - Windows executable package
             - Android APK
           files: |
-            eureka_win.zip
+            synaesthesia_win.zip
             build/app/outputs/flutter-apk/app-release.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -179,7 +179,7 @@ jobs:
         run: |
           try {
             $tagName = "v${{ env.APP_VERSION }}"
-            gh release upload "$tagName" eureka_win.zip build/app/outputs/flutter-apk/app-release.apk --clobber
+            gh release upload "$tagName" synaesthesia_win.zip build/app/outputs/flutter-apk/app-release.apk --clobber
             echo "Successfully uploaded files to existing release: $tagName"
           } catch {
             Write-Error "Failed to upload files to existing release: $_"
