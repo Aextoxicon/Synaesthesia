@@ -33,6 +33,7 @@ type Config struct {
 
 var config Config
 var httpServer *http.Server
+var customMux *http.ServeMux // 使用自定义ServeMux
 var mu sync.RWMutex
 
 //export synaInit
@@ -321,24 +322,33 @@ func synaScan() *C.char {
 
 //export synaStartHttpServer
 func synaStartHttpServer() C.int {
-	mu.RLock()
-	defer mu.RUnlock()
+	mu.Lock() // 使用写锁确保线程安全
+	defer mu.Unlock()
 
 	if config.UploadDir == "" {
 		return -1
 	}
 
-	addr := fmt.Sprintf(":%d", config.Port)
-	httpServer = &http.Server{Addr: addr}
+	// 创建新的 ServeMux 实例
+	customMux = http.NewServeMux()
 
+	addr := fmt.Sprintf(":%d", config.Port)
+	
+	// 注册路由到自定义的 ServeMux
 	if config.UseToken {
-		http.HandleFunc("/upload", tokenAuth(uploadHandler))
+		customMux.HandleFunc("/upload", tokenAuth(uploadHandler))
 	} else {
-		http.HandleFunc("/upload", uploadHandler)
+		customMux.HandleFunc("/upload", uploadHandler)
 	}
 
-	http.HandleFunc("/list", listHandler)
-	http.HandleFunc("/download/", downloadHandler)
+	customMux.HandleFunc("/list", listHandler)
+	customMux.HandleFunc("/download/", downloadHandler)
+
+	// 创建服务器实例并使用自定义 ServeMux
+	httpServer = &http.Server{
+		Addr:    addr,
+		Handler: customMux, // 使用自定义的 mux
+	}
 
 	go func() {
 		log.Printf("HTTP server running on http://localhost:%s", addr)
@@ -364,9 +374,11 @@ func synaStopHttpServer() C.int {
 	if httpServer != nil {
 		err := httpServer.Close()
 		if err != nil {
+			log.Printf("Error closing server: %v", err)
 			return -1
 		}
 		httpServer = nil
+		customMux = nil // 清除 ServeMux 引用
 	}
 	return 0
 }

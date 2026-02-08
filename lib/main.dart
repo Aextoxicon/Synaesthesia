@@ -12,9 +12,6 @@ import 'package:file_picker/file_picker.dart';
 import 'synaesthesia_ffi.dart';
 import 'package:ffi/ffi.dart';
 
-
-
-
 typedef synaInit_func = ffi.Int32 Function(ffi.Pointer<Utf8> configPath);
 typedef SynaInit = int Function(ffi.Pointer<Utf8> configPath);
 
@@ -27,14 +24,28 @@ typedef SynaListFiles = ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> dir);
 typedef synaGetUploadDir_func = ffi.Pointer<Utf8> Function();
 typedef SynaGetUploadDir = ffi.Pointer<Utf8> Function();
 
-typedef synaCompareWithServer_func = ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> token);
-typedef SynaCompareWithServer = ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> token);
+typedef synaCompareWithServer_func =
+    ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> token);
+typedef SynaCompareWithServer =
+    ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> token);
 
+typedef synaUpload_func =
+    ffi.Int32 Function(
+      ffi.Pointer<Utf8> filePath,
+      ffi.Pointer<Utf8> uploadHost,
+    );
+typedef SynaUpload =
+    int Function(ffi.Pointer<Utf8> filePath, ffi.Pointer<Utf8> uploadHost);
+
+typedef synaStartHttpServer_func = ffi.Int32 Function();
+typedef SynaStartHttpServer = int Function();
+
+typedef synaStopHttpServer_func = ffi.Int32 Function();
+typedef SynaStopHttpServer = int Function();
 
 final DynamicLibrary _synaLib = Platform.isWindows
-    ? DynamicLibrary.open('libsynaesthesia.dll')
-    : DynamicLibrary.open('libsyna.so');
-
+    ? DynamicLibrary.open('synaesthesia.dll')
+    : DynamicLibrary.open('libsynaesthesia.so');
 
 final int Function(Pointer<Utf8> configPath) synaInit = _synaLib
     .lookup<NativeFunction<synaInit_func>>('synaInit')
@@ -52,16 +63,31 @@ final Pointer<Utf8> Function() synaGetUploadDir = _synaLib
     .lookup<NativeFunction<synaGetUploadDir_func>>('synaGetUploadDir')
     .asFunction<SynaGetUploadDir>();
 
-final Pointer<Utf8> Function(Pointer<Utf8> token) synaCompareWithServer = _synaLib
-    .lookup<NativeFunction<synaCompareWithServer_func>>('synaCompareWithServer')
-    .asFunction<SynaCompareWithServer>();
+final Pointer<Utf8> Function(Pointer<Utf8> token) synaCompareWithServer =
+    _synaLib
+        .lookup<NativeFunction<synaCompareWithServer_func>>(
+          'synaCompareWithServer',
+        )
+        .asFunction<SynaCompareWithServer>();
+
+final int Function(Pointer<Utf8> filePath, Pointer<Utf8> uploadHost)
+synaUpload = _synaLib
+    .lookup<NativeFunction<synaUpload_func>>('synaUpload')
+    .asFunction<SynaUpload>();
+
+final int Function() synaStartHttpServer = _synaLib
+    .lookup<NativeFunction<synaStartHttpServer_func>>('synaStartHttpServer')
+    .asFunction<SynaStartHttpServer>();
+
+final int Function() synaStopHttpServer = _synaLib
+    .lookup<NativeFunction<synaStopHttpServer_func>>('synaStopHttpServer')
+    .asFunction<SynaStopHttpServer>();
 
 enum SyncMode { server, client }
 
 void main() {
   runApp(const MyApp());
 }
-
 
 class LogManager {
   static final LogManager _instance = LogManager._internal();
@@ -105,12 +131,10 @@ class LogManager {
   }
 }
 
-
 void _log(String message) {
   LogManager().log(message);
   print(message);
 }
-
 
 String formatBytes(int bytes, {int decimalPlaces = 2}) {
   if (bytes == 0) return '0 B';
@@ -154,7 +178,6 @@ class MyApp extends StatelessWidget {
   }
 }
 
-
 class Pages extends StatelessWidget {
   const Pages({super.key});
 
@@ -167,7 +190,6 @@ class Pages extends StatelessWidget {
           bottomNavigationBar: BottomNavigationBar(
             currentIndex: appState.currentIdx,
             onTap: (index) {
-
               appState.setIdx(index);
               if (index == 0) {
                 appState.setSyncMode(SyncMode.server);
@@ -176,8 +198,14 @@ class Pages extends StatelessWidget {
               }
             },
             items: const [
-              BottomNavigationBarItem(icon: Icon(Icons.computer), label: '服务器模式'),
-              BottomNavigationBarItem(icon: Icon(Icons.laptop_mac), label: '客户端模式'),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.computer),
+                label: '服务器模式',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.laptop_mac),
+                label: '客户端模式',
+              ),
             ],
           ),
         );
@@ -186,7 +214,6 @@ class Pages extends StatelessWidget {
   }
 }
 
-
 class MyAppState extends ChangeNotifier {
   int _currentIdx = 0;
   String lastEvent = "No event yet";
@@ -194,11 +221,11 @@ class MyAppState extends ChangeNotifier {
   final List<String> eventHistory = [];
 
   SyncMode _syncMode = SyncMode.server;
-
+  bool _isServerRunning = false;
 
   int get currentIdx => _currentIdx;
   SyncMode get syncMode => _syncMode;
-
+  bool get isServerRunning => _isServerRunning;
 
   void setIdx(int idx) {
     _currentIdx = idx;
@@ -207,10 +234,15 @@ class MyAppState extends ChangeNotifier {
     notifyListeners();
   }
 
-
   void setSyncMode(SyncMode mode) {
     _syncMode = mode;
     _currentIdx = mode == SyncMode.server ? 0 : 1;
+    notifyListeners();
+  }
+
+
+  void setServerRunning(bool running) {
+    _isServerRunning = running;
     notifyListeners();
   }
 
@@ -220,7 +252,6 @@ class MyAppState extends ChangeNotifier {
   String httpToken = '';
 
   MyAppState() {
-
     _currentIdx = _syncMode == SyncMode.server ? 0 : 1;
   }
 
@@ -237,9 +268,7 @@ class MyAppState extends ChangeNotifier {
     lastEvent = event;
     notifyListeners();
   }
-
 }
-
 
 class SyncPage extends StatefulWidget {
   final int selectedTab;
@@ -293,142 +322,7 @@ class _SyncPageState extends State<SyncPage> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton(
-                          onPressed: appState.watchPath.isEmpty
-                              ? null
-                              : () async {
-                                  try {
 
-                                    final result = await showDialog<bool>(
-                                      context: context,
-                                      builder: (BuildContext context) {
-                                        return UploadProgressDialog(
-                                          uploadFuture: _performUpload(appState.httpToken, appState.watchPath),
-                                        );
-                                      },
-                                    );
-
-                                    if (result == true) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('文件上传完成'),
-                                          backgroundColor: Colors.green,
-                                        ),
-                                      );
-                                    } else {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('文件上传失败'),
-                                          backgroundColor: Colors.red,
-                                        ),
-                                      );
-                                    }
-                                  } catch (e) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text('上传出错: $e'),
-                                        backgroundColor: Colors.red,
-                                      ),
-                                    );
-                                  }
-                                },
-                          child: const Text('上传服务器缺失的文件'),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-
-                      ElevatedButton(
-                        onPressed: appState.httpHost.isEmpty
-                            ? null
-                            : () async {
-
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('模拟连接测试成功'),
-                                    backgroundColor: Color.fromARGB(
-                                      255,
-                                      0,
-                                      0,
-                                      0,
-                                    ),
-                                  ),
-                                );
-                              },
-                        child: const Text('测试HTTP连接'),
-                      ),
-
-                      const SizedBox(height: 12),
-
-
-                      ElevatedButton(
-                        onPressed:
-                            appState.watchPath.isEmpty ||
-                                appState.httpHost.isEmpty
-                            ? null
-                            : () async {
-                                try {
-
-                                  final tokenStr = appState.httpToken;
-                                  if (tokenStr.isEmpty) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text('请先输入访问令牌'),
-                                        backgroundColor: Colors.orange,
-                                      ),
-                                    );
-                                    return;
-                                  }
-
-                                  final tokenPtr = tokenStr.toNativeUtf8().cast<ffi.Utf8>();
-                                  try {
-                                    final resultPtr = synaCompareWithServer(tokenPtr);
-                                    if (resultPtr.address == 0) {
-                                      throw Exception('返回空结果指针');
-                                    }
-
-                                    final comparisonResult = resultPtr.toDartString();
-                                    malloc.free(resultPtr);
-
-
-                                    Map<String, dynamic> result = json.decode(comparisonResult);
-
-
-                                    showDialog(
-                                      context: context,
-                                      builder: (BuildContext context) {
-                                        return _buildComparisonDialog(context, result);
-                                      },
-                                    );
-                                  } finally {
-                                    malloc.free(tokenPtr);
-                                  }
-                                } catch (e) {
-
-                                  showDialog(
-                                    context: context,
-                                    builder: (BuildContext context) {
-                                      return AlertDialog(
-                                        title: const Text('比较出错'),
-                                        content: Text('无法连接服务器或获取比较结果: $e'),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () {
-                                              Navigator.of(context).pop();
-                                            },
-                                            child: const Text('关闭'),
-                                          ),
-                                        ],
-                                      );
-                                    },
-                                  );
-                                }
-                              },
-                        child: const Text('比较本地与远程文件差异'),
-                      ),
-
-                      const SizedBox(height: 8),
 
                       TextField(
                         decoration: const InputDecoration(
@@ -438,13 +332,141 @@ class _SyncPageState extends State<SyncPage> {
                         ),
                         obscureText: true,
                         onChanged: (value) => appState.httpToken = value,
-                      )
-                    ]
-                  )
-                )
-              )
-            ] else ... [
-              // 客户端模式 UI
+                      ),
+                      const SizedBox(height: 16),
+
+
+                      Consumer<MyAppState>(
+                        builder: (context, appState, child) {
+                          bool isServerRunning = appState.isServerRunning;
+                          return SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton(
+                              onPressed: appState.watchPath.isEmpty
+                                  ? null
+                                  : () async {
+                                      if (!isServerRunning) {
+
+                                        try {
+
+                                          final config = {
+                                            'uploadDir': appState.watchPath,
+                                            'useCompare': false,
+                                            'apiToken': appState.httpToken,
+                                            'port': 9178,
+                                            'useToken': appState.httpToken.isNotEmpty,
+                                          };
+
+                                          final configFile = File('${appState.watchPath}/.syna/.server_config.json');
+                                          if (configFile.existsSync()) {
+                                            configFile.deleteSync();
+                                          } else {
+                                            Directory(appState.watchPath + '/.syna').createSync(recursive: true);
+                                          }
+                                          await configFile.writeAsString(json.encode(config));
+
+                                          final configPathPtr = configFile.path.toNativeUtf8().cast<ffi.Utf8>();
+                                          final initResult = synaInit(configPathPtr);
+                                          malloc.free(configPathPtr);
+
+                                          if (initResult == 0) {
+                                            final startResult = synaStartHttpServer();
+                                            if (startResult == 0) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                const SnackBar(
+                                                  content: Text('服务器启动成功'),
+                                                ),
+                                              );
+
+
+                                              appState.setServerRunning(true);
+                                            } else {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                const SnackBar(
+                                                  content: Text('服务器启动失败'),
+                                                ),
+                                              );
+                                            }
+                                          } else {
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(
+                                                content: Text('服务器初始化失败: $initResult'),
+                                              ),
+                                            );
+                                          }
+                                        } catch (e) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(
+                                              content: Text('启动服务器时出错: $e'),
+                                            ),
+                                          );
+                                        }
+                                      } else {
+
+                                        try {
+                                          final stopResult = synaStopHttpServer();
+                                          if (stopResult == 0) {
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              const SnackBar(
+                                                content: Text('服务器已停止'),
+                                              ),
+                                            );
+
+
+                                            appState.setServerRunning(false);
+                                          } else {
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              const SnackBar(
+                                                content: Text('停止服务器失败'),
+                                              ),
+                                            );
+                                          }
+                                        } catch (e) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(
+                                              content: Text('停止服务器时出错: $e'),
+                                            ),
+                                          );
+                                        }
+                                      }
+                                    },
+                              child: Text(isServerRunning ? '停止服务器' : '启动服务器'),
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 12),
+
+
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '服务器状态: ${appState.isServerRunning ? "运行中" : "已停止"}',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: appState.isServerRunning ? Colors.green : Colors.red,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text('上传目录: ${appState.watchPath}'),
+                            Text('端口: 9178'),
+                            Text('Token认证: ${appState.httpToken.isNotEmpty ? "已启用" : "已禁用"}'),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ] else ...[
+
               Card(
                 elevation: 2,
                 child: Padding(
@@ -454,11 +476,14 @@ class _SyncPageState extends State<SyncPage> {
                     children: [
                       const Text(
                         '客户端模式',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 16),
-                      
+
                       TextField(
                         decoration: const InputDecoration(
                           labelText: '服务器地址',
@@ -469,21 +494,7 @@ class _SyncPageState extends State<SyncPage> {
                         onChanged: (value) => appState.httpHost = value,
                       ),
                       const SizedBox(height: 12),
-                      
-                      TextField(
-                        decoration: const InputDecoration(
-                          labelText: '服务器端口',
-                          hintText: '输入服务器端口号',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.number,
-                        onChanged: (value) {
-                          int port = int.tryParse(value) ?? 8080;
-                          appState.httpPortC = port;
-                        },
-                      ),
-                      const SizedBox(height: 12),
-                      
+
                       SizedBox(
                         width: double.infinity,
                         child: ElevatedButton(
@@ -503,13 +514,13 @@ class _SyncPageState extends State<SyncPage> {
                         ),
                       ),
                       const SizedBox(height: 12),
-                      
+
                       SizedBox(
                         width: double.infinity,
                         child: ElevatedButton(
                           onPressed: () async {
                             try {
-                              // 客户端同步操作
+
                               final result = await showDialog<bool>(
                                 context: context,
                                 builder: (BuildContext context) {
@@ -526,19 +537,17 @@ class _SyncPageState extends State<SyncPage> {
                                   );
                                 },
                               );
-                              
+
                               if (result == true) {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
                                     content: Text('同步完成'),
-                                    backgroundColor: Colors.green,
                                   ),
                                 );
                               } else {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
                                     content: Text('同步失败或取消'),
-                                    backgroundColor: Colors.red,
                                   ),
                                 );
                               }
@@ -546,7 +555,6 @@ class _SyncPageState extends State<SyncPage> {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
                                   content: Text('同步出错: $e'),
-                                  backgroundColor: Colors.red,
                                 ),
                               );
                             }
@@ -556,34 +564,6 @@ class _SyncPageState extends State<SyncPage> {
                       ),
                       const SizedBox(height: 12),
 
-                      ElevatedButton(
-                        onPressed: () async {
-                          // 获取服务器上传目录
-                          try {
-                            final resultPtr = synaGetUploadDir();
-                            final uploadDir = resultPtr.toDartString();
-                            malloc.free(resultPtr);
-                            
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('服务器上传目录: $uploadDir'),
-                                backgroundColor: Colors.blue,
-                              ),
-                            );
-                          } catch (e) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('获取服务器目录失败: $e'),
-                                backgroundColor: Colors.red,
-                              ),
-                            );
-                          }
-                        },
-                        child: const Text('获取服务器上传目录'),
-                      ),
-
-                      const SizedBox(height: 16),
-
                       TextField(
                         decoration: const InputDecoration(
                           labelText: '访问令牌',
@@ -592,19 +572,18 @@ class _SyncPageState extends State<SyncPage> {
                         ),
                         obscureText: true,
                         onChanged: (value) => appState.httpToken = value,
-                      )
-                    ]
-                  )
-                )
-              )
-            ]
-          ]
-        )
-      )
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
-
 
 class WatcherPage extends StatefulWidget {
   const WatcherPage({super.key});
@@ -616,7 +595,6 @@ class WatcherPage extends StatefulWidget {
 class _WatcherPageState extends State<WatcherPage> {
   @override
   void dispose() {
-
     super.dispose();
   }
 
@@ -636,38 +614,33 @@ class _WatcherPageState extends State<WatcherPage> {
                 if (appState.watchPath.isEmpty) {
                   final snackBar = SnackBar(
                     content: Text('请先选择一个监控路径'),
-                    backgroundColor: Colors.orange,
                   );
                   ScaffoldMessenger.of(context).showSnackBar(snackBar);
                   return;
                 }
 
                 try {
-
                   final pathStr = appState.watchPath;
                   final pathPtr = pathStr.toNativeUtf8().cast<ffi.Utf8>();
                   final resultPtr = synaListFiles(pathPtr.cast());
                   final resultStr = resultPtr.toDartString();
 
-
                   malloc.free(pathPtr);
                   malloc.free(resultPtr);
-
 
                   List<dynamic> files = json.decode(resultStr);
 
                   final snackBar = SnackBar(
                     content: Text('CGO扫描完成，找到${files.length}个文件'),
-                    backgroundColor: Colors.green,
                   );
                   ScaffoldMessenger.of(context).showSnackBar(snackBar);
 
-
-                  appState.updateLastEvent('扫描目录: ${appState.watchPath} (${files.length}个文件)');
+                  appState.updateLastEvent(
+                    '扫描目录: ${appState.watchPath} (${files.length}个文件)',
+                  );
                 } catch (e) {
                   final snackBar = SnackBar(
                     content: Text('CGO扫描失败: $e'),
-                    backgroundColor: Colors.red,
                   );
                   ScaffoldMessenger.of(context).showSnackBar(snackBar);
                 }
@@ -718,7 +691,6 @@ class _WatcherPageState extends State<WatcherPage> {
   }
 }
 
-
 class UploadProgressDialog extends StatefulWidget {
   final Future<bool> uploadFuture;
 
@@ -762,7 +734,6 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
     };
 
     _logManager.addListener(_logListener);
-
 
     Future.delayed(Duration(seconds: 2), () {
       if (mounted) {
@@ -862,9 +833,10 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
   }
 }
 
-
-Widget _buildComparisonDialog(BuildContext context, Map<String, dynamic> result) {
-
+Widget _buildComparisonDialog(
+  BuildContext context,
+  Map<String, dynamic> result,
+) {
   List<dynamic> onlyLocal = result['onlyLocal'] ?? [];
   List<dynamic> onlyRemote = result['onlyRemote'] ?? [];
   List<dynamic> modified = result['modified'] ?? [];
@@ -879,56 +851,47 @@ Widget _buildComparisonDialog(BuildContext context, Map<String, dynamic> result)
           if (onlyLocal.isNotEmpty) ...[
             const Text(
               '仅在本地存在:',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontWeight: FontWeight.bold),
             ),
-            ...onlyLocal.map((file) => ListTile(
-              leading: const Icon(
-                Icons.upload_file,
-                color: Colors.blue,
+            ...onlyLocal.map(
+              (file) => ListTile(
+                leading: const Icon(Icons.upload_file, color: Colors.blue),
+                title: Text(file['path'] ?? file.toString()),
+                subtitle: Text('大小: ${formatBytes(file['size'] ?? 0)}'),
               ),
-              title: Text(file['path'] ?? file.toString()),
-              subtitle: Text('大小: ${formatBytes(file['size'] ?? 0)}'),
-            )),
+            ).toList(),
             const Divider(),
           ],
 
           if (onlyRemote.isNotEmpty) ...[
             const Text(
               '仅在远程存在:',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontWeight: FontWeight.bold),
             ),
-            ...onlyRemote.map((file) => ListTile(
-              leading: const Icon(
-                Icons.download,
-                color: Colors.green,
+            ...onlyRemote.map(
+              (file) => ListTile(
+                leading: const Icon(Icons.download, color: Colors.green),
+                title: Text(file['path'] ?? file.toString()),
+                subtitle: Text('大小: ${formatBytes(file['size'] ?? 0)}'),
               ),
-              title: Text(file['path'] ?? file.toString()),
-              subtitle: Text('大小: ${formatBytes(file['size'] ?? 0)}'),
-            )),
+            ).toList(),
             const Divider(),
           ],
 
           if (modified.isNotEmpty) ...[
             const Text(
               '修改时间不同:',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontWeight: FontWeight.bold),
             ),
-            ...modified.map((file) => ListTile(
-              leading: const Icon(
-                Icons.update,
-                color: Colors.orange,
+            ...modified.map(
+              (file) => ListTile(
+                leading: const Icon(Icons.update, color: Colors.orange),
+                title: Text(file['path'] ?? file.toString()),
+                subtitle: Text(
+                  '本地: ${file['localModTime'] ?? 'N/A'} 远程: ${file['remoteModTime'] ?? 'N/A'}',
+                ),
               ),
-              title: Text(file['path'] ?? file.toString()),
-              subtitle: Text(
-                '本地: ${file['localModTime'] ?? 'N/A'} 远程: ${file['remoteModTime'] ?? 'N/A'}',
-              ),
-            )),
+            ).toList(),
           ],
 
           if (onlyLocal.isEmpty && onlyRemote.isEmpty && modified.isEmpty)
@@ -950,25 +913,20 @@ Widget _buildComparisonDialog(BuildContext context, Map<String, dynamic> result)
   );
 }
 
-
 Future<bool> _performUpload(String token, String localPath) async {
   ffi.Pointer<Utf8>? tokenPtr;
 
   try {
     _log("开始上传文件，使用Token进行认证");
 
-
     final tokenStr = token;
     tokenPtr = tokenStr.toNativeUtf8().cast<ffi.Utf8>();
     final resultPtr = synaCompareWithServer(tokenPtr);
     final resultStr = resultPtr.toDartString();
 
-
     malloc.free(resultPtr);
 
     _log("服务器比较结果: $resultStr");
-
-
 
     await Future.delayed(const Duration(seconds: 2));
 
