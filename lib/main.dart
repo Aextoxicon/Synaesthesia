@@ -12,9 +12,9 @@ import 'package:file_picker/file_picker.dart';
 import 'synaesthesia_ffi.dart';
 import 'package:ffi/ffi.dart';
 
-// FFI相关声明
 
-// 声明外部CGO库接口
+
+
 typedef synaInit_func = ffi.Int32 Function(ffi.Pointer<Utf8> configPath);
 typedef SynaInit = int Function(ffi.Pointer<Utf8> configPath);
 
@@ -30,12 +30,12 @@ typedef SynaGetUploadDir = ffi.Pointer<Utf8> Function();
 typedef synaCompareWithServer_func = ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> token);
 typedef SynaCompareWithServer = ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> token);
 
-// CGO库实例
-final DynamicLibrary _synaLib = Platform.isWindows 
-    ? DynamicLibrary.open('syna.dll')
+
+final DynamicLibrary _synaLib = Platform.isWindows
+    ? DynamicLibrary.open('libsynaesthesia.dll')
     : DynamicLibrary.open('libsyna.so');
 
-// CGO函数绑定
+
 final int Function(Pointer<Utf8> configPath) synaInit = _synaLib
     .lookup<NativeFunction<synaInit_func>>('synaInit')
     .asFunction<SynaInit>();
@@ -163,11 +163,11 @@ class Pages extends StatelessWidget {
     return Consumer<MyAppState>(
       builder: (context, appState, child) {
         return Scaffold(
-          body: SyncPage(selectedTab: appState.currentIdx), // 传递当前选中的标签页
+          body: SyncPage(selectedTab: appState.currentIdx),
           bottomNavigationBar: BottomNavigationBar(
             currentIndex: appState.currentIdx,
             onTap: (index) {
-              // 切换标签页时更新模式
+
               appState.setIdx(index);
               if (index == 0) {
                 appState.setSyncMode(SyncMode.server);
@@ -188,26 +188,26 @@ class Pages extends StatelessWidget {
 
 
 class MyAppState extends ChangeNotifier {
-  int _currentIdx = 0; // 使用私有变量
+  int _currentIdx = 0;
   String lastEvent = "No event yet";
   String watchPath = "";
   final List<String> eventHistory = [];
 
-  SyncMode _syncMode = SyncMode.server; // 使用私有变量
+  SyncMode _syncMode = SyncMode.server;
 
-  // getter方法
+
   int get currentIdx => _currentIdx;
   SyncMode get syncMode => _syncMode;
 
-  // 设置当前索引并同步更新模式
+
   void setIdx(int idx) {
     _currentIdx = idx;
-    // 更新模式：索引0对应服务器模式，索引1对应客户端模式
+
     _syncMode = idx == 0 ? SyncMode.server : SyncMode.client;
     notifyListeners();
   }
 
-  // 设置同步模式并同步更新索引
+
   void setSyncMode(SyncMode mode) {
     _syncMode = mode;
     _currentIdx = mode == SyncMode.server ? 0 : 1;
@@ -220,7 +220,7 @@ class MyAppState extends ChangeNotifier {
   String httpToken = '';
 
   MyAppState() {
-    // 初始化时，如果_syncMode是server，则_currentIdx为0，否则为1
+
     _currentIdx = _syncMode == SyncMode.server ? 0 : 1;
   }
 
@@ -238,7 +238,6 @@ class MyAppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // 移除所有后端功能函数，只保留UI状态管理
 }
 
 
@@ -256,7 +255,7 @@ class _SyncPageState extends State<SyncPage> {
   Widget build(BuildContext context) {
     final appState = context.watch<MyAppState>();
     bool isServerMode = widget.selectedTab == 0;
-    
+
     return Padding(
       padding: const EdgeInsets.all(16.0),
       child: SafeArea(
@@ -297,30 +296,11 @@ class _SyncPageState extends State<SyncPage> {
                       SizedBox(
                         width: double.infinity,
                         child: ElevatedButton(
-                          onPressed: () async {
-                            String? selectedDirectory = await FilePicker
-                                .platform
-                                .getDirectoryPath();
-                            print('Selected Directory: $selectedDirectory');
-                            if (selectedDirectory != null) {
-                              appState.setWatchPath(selectedDirectory);
-                            }
-                          },
-                          child: Text(
-                            appState.watchPath.isEmpty ? '选择要同步的目录' : '选择另一个目录',
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton(
                           onPressed: appState.watchPath.isEmpty
                               ? null
                               : () async {
                                   try {
-                                    // 显示上传进度对话框
+
                                     final result = await showDialog<bool>(
                                       context: context,
                                       builder: (BuildContext context) {
@@ -363,7 +343,7 @@ class _SyncPageState extends State<SyncPage> {
                         onPressed: appState.httpHost.isEmpty
                             ? null
                             : () async {
-                                // 模拟连接测试，现在只显示一个提示
+
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
                                     content: Text('模拟连接测试成功'),
@@ -389,7 +369,7 @@ class _SyncPageState extends State<SyncPage> {
                             ? null
                             : () async {
                                 try {
-                                  // 调用后端CGO库进行文件差异比较
+
                                   final tokenStr = appState.httpToken;
                                   if (tokenStr.isEmpty) {
                                     ScaffoldMessenger.of(context).showSnackBar(
@@ -400,21 +380,21 @@ class _SyncPageState extends State<SyncPage> {
                                     );
                                     return;
                                   }
-                                  
+
                                   final tokenPtr = tokenStr.toNativeUtf8().cast<ffi.Utf8>();
                                   try {
                                     final resultPtr = synaCompareWithServer(tokenPtr);
                                     if (resultPtr.address == 0) {
                                       throw Exception('返回空结果指针');
                                     }
-                                    
+
                                     final comparisonResult = resultPtr.toDartString();
                                     malloc.free(resultPtr);
-                                    
-                                    // 解析CGO库返回的JSON格式比较结果
+
+
                                     Map<String, dynamic> result = json.decode(comparisonResult);
-                                    
-                                    // 显示比较结果对话框
+
+
                                     showDialog(
                                       context: context,
                                       builder: (BuildContext context) {
@@ -425,7 +405,7 @@ class _SyncPageState extends State<SyncPage> {
                                     malloc.free(tokenPtr);
                                   }
                                 } catch (e) {
-                                  // 如果CGO调用失败，显示错误信息
+
                                   showDialog(
                                     context: context,
                                     builder: (BuildContext context) {
@@ -448,18 +428,165 @@ class _SyncPageState extends State<SyncPage> {
                         child: const Text('比较本地与远程文件差异'),
                       ),
 
-                      const SizedBox(height: 16),
-
-                      const Text(
-                        '认证方式 (Authentication):',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-
                       const SizedBox(height: 8),
 
                       TextField(
                         decoration: const InputDecoration(
-                          labelText: '访问令牌 (Access Token)',
+                          labelText: '访问令牌',
+                          hintText: '请输入访问令牌',
+                          border: OutlineInputBorder(),
+                        ),
+                        obscureText: true,
+                        onChanged: (value) => appState.httpToken = value,
+                      )
+                    ]
+                  )
+                )
+              )
+            ] else ... [
+              // 客户端模式 UI
+              Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text(
+                        '客户端模式',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 16),
+                      
+                      TextField(
+                        decoration: const InputDecoration(
+                          labelText: '服务器地址',
+                          hintText: '输入服务器IP地址',
+                          border: OutlineInputBorder(),
+                        ),
+                        keyboardType: TextInputType.url,
+                        onChanged: (value) => appState.httpHost = value,
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      TextField(
+                        decoration: const InputDecoration(
+                          labelText: '服务器端口',
+                          hintText: '输入服务器端口号',
+                          border: OutlineInputBorder(),
+                        ),
+                        keyboardType: TextInputType.number,
+                        onChanged: (value) {
+                          int port = int.tryParse(value) ?? 8080;
+                          appState.httpPortC = port;
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: () async {
+                            String? selectedDirectory = await FilePicker
+                                .platform
+                                .getDirectoryPath();
+                            print('Selected Directory: $selectedDirectory');
+                            if (selectedDirectory != null) {
+                              appState.setWatchPath(selectedDirectory);
+                            }
+                          },
+                          child: Text(
+                            appState.watchPath.isEmpty ? '选择同步目录' : '更改同步目录',
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: () async {
+                            try {
+                              // 客户端同步操作
+                              final result = await showDialog<bool>(
+                                context: context,
+                                builder: (BuildContext context) {
+                                  return const AlertDialog(
+                                    title: Text('同步进度'),
+                                    content: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        CircularProgressIndicator(),
+                                        SizedBox(height: 16),
+                                        Text('正在同步文件...'),
+                                      ],
+                                    ),
+                                  );
+                                },
+                              );
+                              
+                              if (result == true) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('同步完成'),
+                                    backgroundColor: Colors.green,
+                                  ),
+                                );
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('同步失败或取消'),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              }
+                            } catch (e) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('同步出错: $e'),
+                                  backgroundColor: Colors.red,
+                                ),
+                              );
+                            }
+                          },
+                          child: const Text('开始同步到服务器'),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+
+                      ElevatedButton(
+                        onPressed: () async {
+                          // 获取服务器上传目录
+                          try {
+                            final resultPtr = synaGetUploadDir();
+                            final uploadDir = resultPtr.toDartString();
+                            malloc.free(resultPtr);
+                            
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('服务器上传目录: $uploadDir'),
+                                backgroundColor: Colors.blue,
+                              ),
+                            );
+                          } catch (e) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('获取服务器目录失败: $e'),
+                                backgroundColor: Colors.red,
+                              ),
+                            );
+                          }
+                        },
+                        child: const Text('获取服务器上传目录'),
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      TextField(
+                        decoration: const InputDecoration(
+                          labelText: '访问令牌',
                           hintText: '请输入访问令牌',
                           border: OutlineInputBorder(),
                         ),
@@ -489,7 +616,7 @@ class WatcherPage extends StatefulWidget {
 class _WatcherPageState extends State<WatcherPage> {
   @override
   void dispose() {
-    // 不再调用_stopWatch，因为后端逻辑已移除
+
     super.dispose();
   }
 
@@ -514,28 +641,28 @@ class _WatcherPageState extends State<WatcherPage> {
                   ScaffoldMessenger.of(context).showSnackBar(snackBar);
                   return;
                 }
-                
+
                 try {
-                  // 使用CGO库扫描目录
+
                   final pathStr = appState.watchPath;
                   final pathPtr = pathStr.toNativeUtf8().cast<ffi.Utf8>();
                   final resultPtr = synaListFiles(pathPtr.cast());
                   final resultStr = resultPtr.toDartString();
-                  
-                  // 释放内存
+
+
                   malloc.free(pathPtr);
                   malloc.free(resultPtr);
-                  
-                  // 解析CGO库返回的JSON格式结果
+
+
                   List<dynamic> files = json.decode(resultStr);
-                  
+
                   final snackBar = SnackBar(
                     content: Text('CGO扫描完成，找到${files.length}个文件'),
                     backgroundColor: Colors.green,
                   );
                   ScaffoldMessenger.of(context).showSnackBar(snackBar);
-                  
-                  // 将扫描结果添加到事件历史
+
+
                   appState.updateLastEvent('扫描目录: ${appState.watchPath} (${files.length}个文件)');
                 } catch (e) {
                   final snackBar = SnackBar(
@@ -636,7 +763,7 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
 
     _logManager.addListener(_logListener);
 
-    // 模拟上传完成
+
     Future.delayed(Duration(seconds: 2), () {
       if (mounted) {
         setState(() {
@@ -735,9 +862,9 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
   }
 }
 
-// 构建比较结果对话框
+
 Widget _buildComparisonDialog(BuildContext context, Map<String, dynamic> result) {
-  // 假设返回的数据结构包含 onlyLocal, onlyRemote, modified 等字段
+
   List<dynamic> onlyLocal = result['onlyLocal'] ?? [];
   List<dynamic> onlyRemote = result['onlyRemote'] ?? [];
   List<dynamic> modified = result['modified'] ?? [];
@@ -766,7 +893,7 @@ Widget _buildComparisonDialog(BuildContext context, Map<String, dynamic> result)
             )),
             const Divider(),
           ],
-          
+
           if (onlyRemote.isNotEmpty) ...[
             const Text(
               '仅在远程存在:',
@@ -784,7 +911,7 @@ Widget _buildComparisonDialog(BuildContext context, Map<String, dynamic> result)
             )),
             const Divider(),
           ],
-          
+
           if (modified.isNotEmpty) ...[
             const Text(
               '修改时间不同:',
@@ -803,7 +930,7 @@ Widget _buildComparisonDialog(BuildContext context, Map<String, dynamic> result)
               ),
             )),
           ],
-          
+
           if (onlyLocal.isEmpty && onlyRemote.isEmpty && modified.isEmpty)
             const ListTile(
               leading: Icon(Icons.check, color: Colors.green),
@@ -823,28 +950,28 @@ Widget _buildComparisonDialog(BuildContext context, Map<String, dynamic> result)
   );
 }
 
-// 上传功能实现
+
 Future<bool> _performUpload(String token, String localPath) async {
-  ffi.Pointer<Utf8>? tokenPtr; // 定义在函数作用域内，以便finally可以访问
-  
+  ffi.Pointer<Utf8>? tokenPtr;
+
   try {
     _log("开始上传文件，使用Token进行认证");
-    
-    // 将token转换为指针并调用CGO函数
+
+
     final tokenStr = token;
     tokenPtr = tokenStr.toNativeUtf8().cast<ffi.Utf8>();
     final resultPtr = synaCompareWithServer(tokenPtr);
     final resultStr = resultPtr.toDartString();
-    
-    // 释放内存
+
+
     malloc.free(resultPtr);
-    
+
     _log("服务器比较结果: $resultStr");
-    
-    // 这里可以根据CGO库返回的结果决定如何处理上传
-    // 模拟上传过程，实际上应该是通过CGO库完成上传
+
+
+
     await Future.delayed(const Duration(seconds: 2));
-    
+
     _log("上传完成");
     return true;
   } catch (e) {

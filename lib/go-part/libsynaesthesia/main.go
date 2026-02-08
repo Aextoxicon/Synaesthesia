@@ -5,12 +5,14 @@ package main
 */
 import "C"
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -366,6 +368,97 @@ func synaStopHttpServer() C.int {
 		}
 		httpServer = nil
 	}
+	return 0
+}
+
+//export synaUpload
+func synaUpload(filePath *C.char, uploadHost *C.char) C.int {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	filePathStr := C.GoString(filePath)
+	uploadHostStr := C.GoString(uploadHost)
+
+	// 验证文件是否存在
+	if _, err := os.Stat(filePathStr); os.IsNotExist(err) {
+		log.Printf("File does not exist: %s", filePathStr)
+		return -1
+	}
+
+	// 打开文件
+	file, err := os.Open(filePathStr)
+	if err != nil {
+		log.Printf("Failed to open file: %v", err)
+		return -2
+	}
+	defer file.Close()
+
+	// 获取文件名
+	filename := filepath.Base(filePathStr)
+	
+	// 创建 multipart writer
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		log.Printf("Failed to create form file: %v", err)
+		return -3
+	}
+	
+	// 复制文件内容到 multipart
+	_, err = io.Copy(part, file)
+	if err != nil {
+		log.Printf("Failed to copy file content: %v", err)
+		return -4
+	}
+	
+	err = writer.Close()
+	if err != nil {
+		log.Printf("Failed to close multipart writer: %v", err)
+		return -5
+	}
+
+	// 构建请求 URL
+	uploadURL := uploadHostStr
+	if !strings.HasSuffix(uploadHostStr, "/") {
+		uploadURL += "/"
+	}
+	uploadURL += "upload"
+
+	// 创建 HTTP 请求
+	req, err := http.NewRequest("POST", uploadURL, body)
+	if err != nil {
+		log.Printf("Failed to create HTTP request: %v", err)
+		return -6
+	}
+
+	// 设置请求头
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	
+	// 如果启用了 Token 认证，添加 Authorization 头
+	if config.UseToken {
+		req.Header.Set("Authorization", "Bearer "+config.ApiToken)
+	}
+
+	// 发送请求
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Failed to send HTTP request: %v", err)
+		return -7
+	}
+	defer resp.Body.Close()
+
+	// 检查响应状态
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Upload failed with status code: %d", resp.StatusCode)
+		return -8
+	}
+
+	log.Printf("File uploaded successfully to: %s", uploadURL)
 	return 0
 }
 
