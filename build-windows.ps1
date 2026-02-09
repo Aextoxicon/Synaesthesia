@@ -1,1 +1,1 @@
-flutter clean ; flutter build windows ; .\build\windows\x64\runner\Release\flutter_application.exe
+flutter clean; flutter build windows; cd lib\libsynaesthesia; .\build-windows.ps1; cd ..\..; .\build\windows\x64\runner\Release\flutter_application.exe

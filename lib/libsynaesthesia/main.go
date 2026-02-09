@@ -33,8 +33,9 @@ type Config struct {
 
 var config Config
 var httpServer *http.Server
-var customMux *http.ServeMux // 使用自定义ServeMux
+var theMux *http.ServeMux
 var mu sync.RWMutex
+var started bool
 
 //export synaInit
 func synaInit(configPath *C.char) C.int {
@@ -322,33 +323,37 @@ func synaScan() *C.char {
 
 //export synaStartHttpServer
 func synaStartHttpServer() C.int {
-	mu.Lock() // 使用写锁确保线程安全
+	mu.Lock()
 	defer mu.Unlock()
+
+	if started {
+		log.Printf("HTTP server is already running")
+		return 0
+	}
 
 	if config.UploadDir == "" {
 		return -1
 	}
 
-	// 创建新的 ServeMux 实例
-	customMux = http.NewServeMux()
+	theMux = http.NewServeMux()
 
 	addr := fmt.Sprintf(":%d", config.Port)
-	
-	// 注册路由到自定义的 ServeMux
+
 	if config.UseToken {
-		customMux.HandleFunc("/upload", tokenAuth(uploadHandler))
+		theMux.HandleFunc("/upload", tokenAuth(uploadHandler))
 	} else {
-		customMux.HandleFunc("/upload", uploadHandler)
+		theMux.HandleFunc("/upload", uploadHandler)
 	}
 
-	customMux.HandleFunc("/list", listHandler)
-	customMux.HandleFunc("/download/", downloadHandler)
+	theMux.HandleFunc("/list", listHandler)
+	theMux.HandleFunc("/download/", downloadHandler)
 
-	// 创建服务器实例并使用自定义 ServeMux
 	httpServer = &http.Server{
 		Addr:    addr,
-		Handler: customMux, // 使用自定义的 mux
+		Handler: theMux,
 	}
+
+	started = true
 
 	go func() {
 		log.Printf("HTTP server running on http://localhost:%s", addr)
@@ -360,6 +365,11 @@ func synaStartHttpServer() C.int {
 		}
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server error: %v", err)
+
+			// 服务器停止后重置状态
+			mu.Lock()
+			started = false
+			mu.Unlock()
 		}
 	}()
 
@@ -378,7 +388,8 @@ func synaStopHttpServer() C.int {
 			return -1
 		}
 		httpServer = nil
-		customMux = nil // 清除 ServeMux 引用
+		theMux = nil
+		started = false
 	}
 	return 0
 }
@@ -391,13 +402,11 @@ func synaUpload(filePath *C.char, uploadHost *C.char) C.int {
 	filePathStr := C.GoString(filePath)
 	uploadHostStr := C.GoString(uploadHost)
 
-	// 验证文件是否存在
 	if _, err := os.Stat(filePathStr); os.IsNotExist(err) {
 		log.Printf("File does not exist: %s", filePathStr)
 		return -1
 	}
 
-	// 打开文件
 	file, err := os.Open(filePathStr)
 	if err != nil {
 		log.Printf("Failed to open file: %v", err)
@@ -405,55 +414,47 @@ func synaUpload(filePath *C.char, uploadHost *C.char) C.int {
 	}
 	defer file.Close()
 
-	// 获取文件名
 	filename := filepath.Base(filePathStr)
-	
-	// 创建 multipart writer
+
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	
+
 	part, err := writer.CreateFormFile("file", filename)
 	if err != nil {
 		log.Printf("Failed to create form file: %v", err)
 		return -3
 	}
-	
-	// 复制文件内容到 multipart
+
 	_, err = io.Copy(part, file)
 	if err != nil {
 		log.Printf("Failed to copy file content: %v", err)
 		return -4
 	}
-	
+
 	err = writer.Close()
 	if err != nil {
 		log.Printf("Failed to close multipart writer: %v", err)
 		return -5
 	}
 
-	// 构建请求 URL
 	uploadURL := uploadHostStr
 	if !strings.HasSuffix(uploadHostStr, "/") {
 		uploadURL += "/"
 	}
 	uploadURL += "upload"
 
-	// 创建 HTTP 请求
 	req, err := http.NewRequest("POST", uploadURL, body)
 	if err != nil {
 		log.Printf("Failed to create HTTP request: %v", err)
 		return -6
 	}
 
-	// 设置请求头
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	
-	// 如果启用了 Token 认证，添加 Authorization 头
+
 	if config.UseToken {
 		req.Header.Set("Authorization", "Bearer "+config.ApiToken)
 	}
 
-	// 发送请求
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
@@ -464,7 +465,6 @@ func synaUpload(filePath *C.char, uploadHost *C.char) C.int {
 	}
 	defer resp.Body.Close()
 
-	// 检查响应状态
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("Upload failed with status code: %d", resp.StatusCode)
 		return -8

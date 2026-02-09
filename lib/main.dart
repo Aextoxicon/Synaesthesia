@@ -44,7 +44,7 @@ typedef synaStopHttpServer_func = ffi.Int32 Function();
 typedef SynaStopHttpServer = int Function();
 
 final DynamicLibrary _synaLib = Platform.isWindows
-    ? DynamicLibrary.open('synaesthesia.dll')
+    ? DynamicLibrary.open('libsynaesthesia.dll')
     : DynamicLibrary.open('libsynaesthesia.so');
 
 final int Function(Pointer<Utf8> configPath) synaInit = _synaLib

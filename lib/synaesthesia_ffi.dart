@@ -20,7 +20,7 @@ class SynaesthesiaLibrary {
   SynaesthesiaLibrary._() {
     String libraryPath;
     if (Platform.isWindows) {
-      libraryPath = 'synaesthesia.dll';
+      libraryPath = 'libsynaesthesia.dll';
     } else if (Platform.isAndroid) {
       libraryPath = 'libsynaesthesia.so';
     } else if (Platform.isMacOS) {
@@ -34,7 +34,7 @@ class SynaesthesiaLibrary {
     } catch (e) {
       String projectPath = '';
       if (Platform.isWindows) {
-        projectPath = './lib/go-part/libsynaesthesia/synaesthesia.dll';
+        projectPath = './lib/go-part/libsynaesthesia/libsynaesthesia.dll';
       } else {
         projectPath = './lib/go-part/libsynaesthesia/libsynaesthesia.so';
       }
