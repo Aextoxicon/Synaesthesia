@@ -29,6 +29,11 @@ typedef synaCompareWithServer_func =
 typedef SynaCompareWithServer =
     ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> token);
 
+typedef synaCompareChanges_func =
+    ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> remoteHost, ffi.Pointer<Utf8> token);
+typedef SynaCompareChanges =
+    ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> remoteHost, ffi.Pointer<Utf8> token);
+
 typedef synaUpload_func =
     ffi.Int32 Function(
       ffi.Pointer<Utf8> filePath,
@@ -71,6 +76,13 @@ final Pointer<Utf8> Function(Pointer<Utf8> token) synaCompareWithServer =
           'synaCompareWithServer',
         )
         .asFunction<SynaCompareWithServer>();
+
+final Pointer<Utf8> Function(Pointer<Utf8> remoteHost, Pointer<Utf8> token) synaCompareChanges =
+    _synaLib
+        .lookup<NativeFunction<synaCompareChanges_func>>(
+          'synaCompareChanges',
+        )
+        .asFunction<SynaCompareChanges>();
 
 final int Function(Pointer<Utf8> filePath, Pointer<Utf8> uploadHost)
 synaUpload = _synaLib
@@ -579,6 +591,72 @@ class _SyncPageState extends State<SyncPage> {
                   ),
                 ),
               ),
+
+              Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text(
+                        '文件比较',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 16),
+
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: () async {
+                            try {
+                              final host = 'http://${appState.httpHost}:9178';
+                              final hostPtr = host.toNativeUtf8().cast<ffi.Utf8>();
+                              final tokenPtr = appState.httpToken.toNativeUtf8().cast<ffi.Utf8>();
+
+                              final resultPtr = synaCompareChanges(hostPtr, tokenPtr);
+                              final resultStr = resultPtr.toDartString();
+
+                              malloc.free(hostPtr);
+                              malloc.free(tokenPtr);
+                              malloc.free(resultPtr);
+
+                              final result = json.decode(resultStr);
+
+                              if (result['status'] == 'success') {
+                                // 显示比较结果
+                                showDialog(
+                                  context: context,
+                                  builder: (BuildContext context) {
+                                    return _buildComparisonResultDialog(context, result);
+                                  },
+                                );
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('比较失败: ${result['error']}'),
+                                  ),
+                                );
+                              }
+                            } catch (e) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('比较出错: $e'),
+                                ),
+                              );
+                            }
+                          },
+                          child: const Text('比较本地与远程文件'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ],
         ),
@@ -835,72 +913,61 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
   }
 }
 
-Widget _buildComparisonDialog(
+Widget _buildComparisonResultDialog(
   BuildContext context,
   Map<String, dynamic> result,
 ) {
-  List<dynamic> onlyLocal = result['onlyLocal'] ?? [];
-  List<dynamic> onlyRemote = result['onlyRemote'] ?? [];
-  List<dynamic> modified = result['modified'] ?? [];
+  List<dynamic> missingOnRemote = result['missingOnRemote'] ?? [];
+  int localCount = result['localCount'] ?? 0;
+  int remoteCount = result['remoteCount'] ?? 0;
+  int missingCount = result['missingCount'] ?? 0;
 
   return AlertDialog(
-    title: const Text('文件差异比较结果'),
+    title: const Text('文件比较结果'),
     content: SizedBox(
       width: double.maxFinite,
       child: ListView(
         shrinkWrap: true,
         children: [
-          if (onlyLocal.isNotEmpty) ...[
+          ListTile(
+            title: Text('本地文件数: $localCount'),
+          ),
+          ListTile(
+            title: Text('远程文件数: $remoteCount'),
+          ),
+          ListTile(
+            title: Text('远程缺失文件数: $missingCount'),
+          ),
+          const Divider(),
+          
+          if (missingOnRemote.isNotEmpty) ...[
             const Text(
-              '仅在本地存在:',
+              '以下文件仅存在于本地（远程缺失）:',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
-            ...onlyLocal.map(
-              (file) => ListTile(
-                leading: const Icon(Icons.upload_file, color: Colors.blue),
-                title: Text(file['path'] ?? file.toString()),
-                subtitle: Text('大小: ${formatBytes(file['size'] ?? 0)}'),
-              ),
-            ).toList(),
-            const Divider(),
-          ],
-
-          if (onlyRemote.isNotEmpty) ...[
-            const Text(
-              '仅在远程存在:',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            ...onlyRemote.map(
-              (file) => ListTile(
-                leading: const Icon(Icons.download, color: Colors.green),
-                title: Text(file['path'] ?? file.toString()),
-                subtitle: Text('大小: ${formatBytes(file['size'] ?? 0)}'),
-              ),
-            ).toList(),
-            const Divider(),
-          ],
-
-          if (modified.isNotEmpty) ...[
-            const Text(
-              '修改时间不同:',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            ...modified.map(
-              (file) => ListTile(
-                leading: const Icon(Icons.update, color: Colors.orange),
-                title: Text(file['path'] ?? file.toString()),
-                subtitle: Text(
-                  '本地: ${file['localModTime'] ?? 'N/A'} 远程: ${file['remoteModTime'] ?? 'N/A'}',
+            ...missingOnRemote.map(
+              (file) => Card(
+                margin: const EdgeInsets.only(top: 8),
+                child: ListTile(
+                  leading: const Icon(Icons.file_copy, color: Colors.orange),
+                  title: Text(file['name'] ?? 'Unknown'),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('大小: ${formatBytes(file['size'] ?? 0)}'),
+                      Text('修改时间: ${DateTime.parse(file['modTime'].toString()).toString()}'),
+                      if (file['sha256'] != null) Text('SHA256: ${file['sha256']}'),
+                    ],
+                  ),
                 ),
               ),
             ).toList(),
-          ],
-
-          if (onlyLocal.isEmpty && onlyRemote.isEmpty && modified.isEmpty)
+          ] else ...[
             const ListTile(
               leading: Icon(Icons.check, color: Colors.green),
-              title: Text('本地与远程文件完全一致'),
+              title: Text('远程服务器文件完整，无缺失文件'),
             ),
+          ],
         ],
       ),
     ),

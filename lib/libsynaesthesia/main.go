@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 type Config struct {
@@ -472,6 +473,116 @@ func synaUpload(filePath *C.char, uploadHost *C.char) C.int {
 
 	log.Printf("File uploaded successfully to: %s", uploadURL)
 	return 0
+}
+
+// FileListResponse represents the response structure from /list endpoint
+type FileListResponse struct {
+	AllFiles []FileState `json:"allFiles"`
+	Status   string      `json:"status"`
+}
+
+//export synaCompareChanges
+func synaCompareChanges(remoteHost *C.char, token *C.char) *C.char {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	remoteHostStr := C.GoString(remoteHost)
+	tokenStr := C.GoString(token)
+
+	remoteURL := remoteHostStr
+	if !strings.HasSuffix(remoteHostStr, "/") {
+		remoteURL += "/"
+	}
+	remoteURL += "list"
+
+	req, err := http.NewRequest("GET", remoteURL, nil)
+	if err != nil {
+		log.Printf("Failed to create remote list request: %v", err)
+		errorResponse := `{"error": "创建远程请求失败", "status": "error"}`
+		return C.CString(errorResponse)
+	}
+
+	if config.UseToken && tokenStr != "" {
+		req.Header.Set("Authorization", "Bearer "+tokenStr)
+	} else if config.UseToken && config.ApiToken != "" {
+		req.Header.Set("Authorization", "Bearer "+config.ApiToken)
+	}
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Failed to get remote file list: %v", err)
+		errorResponse := `{"error": "获取远程文件列表失败", "status": "error"}`
+		return C.CString(errorResponse)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Remote list request failed with status: %d", resp.StatusCode)
+		errorResponse := `{"error": "远程服务器返回错误状态", "status": "error"}`
+		return C.CString(errorResponse)
+	}
+
+	var remoteResponse FileListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&remoteResponse); err != nil {
+		log.Printf("Failed to decode remote response: %v", err)
+		errorResponse := `{"error": "解析远程响应失败", "status": "error"}`
+		return C.CString(errorResponse)
+	}
+
+	if remoteResponse.Status != "success" {
+		log.Printf("Remote response status is not success: %s", remoteResponse.Status)
+		errorResponse := `{"error": "远程服务器返回非成功状态", "status": "error"}`
+		return C.CString(errorResponse)
+	}
+
+	localScanResult := synaScan()
+	localScanStr := C.GoString(localScanResult)
+	C.free(unsafe.Pointer(localScanResult))
+
+	var localResponse FileListResponse
+	if err := json.Unmarshal([]byte(localScanStr), &localResponse); err != nil {
+		log.Printf("Failed to decode local response: %v", err)
+		errorResponse := `{"error": "解析本地响应失败", "status": "error"}`
+		return C.CString(errorResponse)
+	}
+
+	if localResponse.Status != "success" {
+		log.Printf("Local response status is not success: %s", localResponse.Status)
+		errorResponse := `{"error": "本地扫描返回非成功状态", "status": "error"}`
+		return C.CString(errorResponse)
+	}
+
+	remoteFileMap := make(map[string]FileState)
+	for _, file := range remoteResponse.AllFiles {
+		remoteFileMap[file.Name] = file
+	}
+
+	var missingOnRemote []FileState
+	for _, localFile := range localResponse.AllFiles {
+		if _, exists := remoteFileMap[localFile.Name]; !exists {
+			missingOnRemote = append(missingOnRemote, localFile)
+		}
+	}
+
+	result := map[string]interface{}{
+		"missingOnRemote": missingOnRemote,
+		"localCount":      len(localResponse.AllFiles),
+		"remoteCount":     len(remoteResponse.AllFiles),
+		"missingCount":    len(missingOnRemote),
+		"status":          "success",
+	}
+
+	jsonResult, err := json.Marshal(result)
+	if err != nil {
+		log.Printf("Failed to marshal comparison result: %v", err)
+		errorResponse := `{"error": "生成比较结果失败", "status": "error"}`
+		return C.CString(errorResponse)
+	}
+
+	return C.CString(string(jsonResult))
 }
 
 func main() {}

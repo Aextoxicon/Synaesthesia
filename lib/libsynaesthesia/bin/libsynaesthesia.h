@@ -87,12 +87,13 @@ typedef struct { void *data; GoInt len; GoInt cap; } GoSlice;
 extern "C" {
 #endif
 
-extern int synaInit(char* configPath);
-extern char* synaGetUploadDir(void);
-extern char* synaScan(void);
-extern int synaStartHttpServer(void);
-extern int synaStopHttpServer(void);
-extern int synaUpload(char* filePath, char* uploadHost);
+extern __declspec(dllexport) int synaInit(char* configPath);
+extern __declspec(dllexport) char* synaGetUploadDir(void);
+extern __declspec(dllexport) char* synaScan(void);
+extern __declspec(dllexport) int synaStartHttpServer(void);
+extern __declspec(dllexport) int synaStopHttpServer(void);
+extern __declspec(dllexport) int synaUpload(char* filePath, char* uploadHost);
+extern __declspec(dllexport) char* synaCompareChanges(char* remoteHost, char* token);
 
 #ifdef __cplusplus
 }
