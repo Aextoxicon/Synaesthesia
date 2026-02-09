@@ -45,7 +45,9 @@ typedef SynaStopHttpServer = int Function();
 
 final DynamicLibrary _synaLib = Platform.isWindows
     ? DynamicLibrary.open('libsynaesthesia.dll')
-    : DynamicLibrary.open('libsynaesthesia.so');
+    : Platform.isMacOS
+        ? DynamicLibrary.open('libsynaesthesia.dylib')
+        : DynamicLibrary.open('libsynaesthesia.so');
 
 final int Function(Pointer<Utf8> configPath) synaInit = _synaLib
     .lookup<NativeFunction<synaInit_func>>('synaInit')
