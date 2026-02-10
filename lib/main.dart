@@ -90,6 +90,28 @@ String formatBytes(int bytes, {int decimalPlaces = 2}) {
   return '${value.toStringAsFixed(decimalPlaces)} ${units[exponent]}';
 }
 
+Future<String> listFiles(String path) async {
+  final url = 'http://localhost:9178/list-files';
+  
+  try {
+    final httpClient = HttpClient();
+    final request = await httpClient.postUrl(Uri.parse(url));
+    request.headers.set('Content-Type', 'application/json');
+    
+    final requestBody = json.encode({'path': path});
+    request.write(requestBody);
+    
+    final response = await request.close();
+    final responseBody = await response.transform(utf8.decoder).join();
+    httpClient.close();
+    
+    return responseBody;
+  } catch (e) {
+    _log("listFiles 请求失败: $e");
+    return '[]';
+  }
+}
+
 Future<String> _getActualUploadDir() async {
   try {
     final resultPtr = synaesthesia.synaGetUploadDir();
@@ -638,12 +660,8 @@ class _WatcherPageState extends State<WatcherPage> {
 
                 try {
                   final pathStr = appState.watchPath;
-                  final pathPtr = pathStr.toNativeUtf8().cast<ffi.Utf8>();
-                  final resultPtr = listFiles(pathPtr.cast());
-                  final resultStr = resultPtr.toDartString();
-
-                  malloc.free(pathPtr);
-                  malloc.free(resultPtr);
+                  
+                  final resultStr = await listFiles(pathStr);
 
                   List<dynamic> files = json.decode(resultStr);
 
