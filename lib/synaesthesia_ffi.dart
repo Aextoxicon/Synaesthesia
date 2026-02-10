@@ -8,16 +8,8 @@ typedef SynaInitDart = int Function(Pointer<Utf8> configPath);
 typedef SynaScanC = Pointer<Utf8> Function();
 typedef SynaScanDart = Pointer<Utf8> Function();
 
-// 新增 synaListFiles 的类型定义
-typedef SynaListFilesC = Pointer<Utf8> Function(Pointer<Utf8> dir);
-typedef SynaListFilesDart = Pointer<Utf8> Function(Pointer<Utf8> dir);
-
 typedef SynaGetUploadDirC = Pointer<Utf8> Function();
 typedef SynaGetUploadDirDart = Pointer<Utf8> Function();
-
-// 新增 synaCompareWithServer 的类型定义
-typedef SynaCompareWithServerC = Pointer<Utf8> Function(Pointer<Utf8> token);
-typedef SynaCompareWithServerDart = Pointer<Utf8> Function(Pointer<Utf8> token);
 
 typedef SynaStartHttpServerC = Int32 Function();
 typedef SynaStartHttpServerDart = int Function();
@@ -35,9 +27,7 @@ class SynaesthesiaLibrary {
   late final DynamicLibrary _dylib;
   late final SynaInitDart synaInit;
   late final SynaScanDart synaScan;
-  late final SynaListFilesDart synaListFiles;
   late final SynaGetUploadDirDart synaGetUploadDir;
-  late final SynaCompareWithServerDart synaCompareWithServer;
   late final SynaStartHttpServerDart synaStartHttpServer;
   late final SynaStopHttpServerDart synaStopHttpServer;
   late final SynaUploadDart synaUpload;
@@ -59,9 +49,7 @@ class SynaesthesiaLibrary {
 
     synaInit = _dylib.lookupFunction<SynaInitC, SynaInitDart>('synaInit');
     synaScan = _dylib.lookupFunction<SynaScanC, SynaScanDart>('synaScan');
-    synaListFiles = _dylib.lookupFunction<SynaListFilesC, SynaListFilesDart>('synaListFiles');
     synaGetUploadDir = _dylib.lookupFunction<SynaGetUploadDirC, SynaGetUploadDirDart>('synaGetUploadDir');
-    synaCompareWithServer = _dylib.lookupFunction<SynaCompareWithServerC, SynaCompareWithServerDart>('synaCompareWithServer');
     synaStartHttpServer = _dylib.lookupFunction<SynaStartHttpServerC, SynaStartHttpServerDart>('synaStartHttpServer');
     synaStopHttpServer = _dylib.lookupFunction<SynaStopHttpServerC, SynaStopHttpServerDart>('synaStopHttpServer');
     synaUpload = _dylib.lookupFunction<SynaUploadC, SynaUploadDart>('synaUpload');

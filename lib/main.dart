@@ -12,90 +12,7 @@ import 'package:file_picker/file_picker.dart';
 import 'synaesthesia_ffi.dart';
 import 'package:ffi/ffi.dart';
 
-typedef synaInit_func = ffi.Int32 Function(ffi.Pointer<Utf8> configPath);
-typedef SynaInit = int Function(ffi.Pointer<Utf8> configPath);
-
-typedef synaScan_func = ffi.Pointer<Utf8> Function();
-typedef SynaScan = ffi.Pointer<Utf8> Function();
-
-typedef synaListFiles_func = ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> dir);
-typedef SynaListFiles = ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> dir);
-
-typedef synaGetUploadDir_func = ffi.Pointer<Utf8> Function();
-typedef SynaGetUploadDir = ffi.Pointer<Utf8> Function();
-
-typedef synaCompareWithServer_func =
-    ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> token);
-typedef SynaCompareWithServer =
-    ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> token);
-
-typedef synaCompareChanges_func =
-    ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> remoteHost, ffi.Pointer<Utf8> token);
-typedef SynaCompareChanges =
-    ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> remoteHost, ffi.Pointer<Utf8> token);
-
-typedef synaUpload_func =
-    ffi.Int32 Function(
-      ffi.Pointer<Utf8> filePath,
-      ffi.Pointer<Utf8> uploadHost,
-    );
-typedef SynaUpload =
-    int Function(ffi.Pointer<Utf8> filePath, ffi.Pointer<Utf8> uploadHost);
-
-typedef synaStartHttpServer_func = ffi.Int32 Function();
-typedef SynaStartHttpServer = int Function();
-
-typedef synaStopHttpServer_func = ffi.Int32 Function();
-typedef SynaStopHttpServer = int Function();
-
-final DynamicLibrary _synaLib = Platform.isWindows
-    ? DynamicLibrary.open('libsynaesthesia.dll')
-    : Platform.isMacOS
-        ? DynamicLibrary.open('libsynaesthesia.dylib')
-        : DynamicLibrary.open('libsynaesthesia.so');
-
-final int Function(Pointer<Utf8> configPath) synaInit = _synaLib
-    .lookup<NativeFunction<synaInit_func>>('synaInit')
-    .asFunction<SynaInit>();
-
-final Pointer<Utf8> Function() synaScan = _synaLib
-    .lookup<NativeFunction<synaScan_func>>('synaScan')
-    .asFunction<SynaScan>();
-
-final Pointer<Utf8> Function(Pointer<Utf8> dir) synaListFiles = _synaLib
-    .lookup<NativeFunction<synaListFiles_func>>('synaListFiles')
-    .asFunction<SynaListFiles>();
-
-final Pointer<Utf8> Function() synaGetUploadDir = _synaLib
-    .lookup<NativeFunction<synaGetUploadDir_func>>('synaGetUploadDir')
-    .asFunction<SynaGetUploadDir>();
-
-final Pointer<Utf8> Function(Pointer<Utf8> token) synaCompareWithServer =
-    _synaLib
-        .lookup<NativeFunction<synaCompareWithServer_func>>(
-          'synaCompareWithServer',
-        )
-        .asFunction<SynaCompareWithServer>();
-
-final Pointer<Utf8> Function(Pointer<Utf8> remoteHost, Pointer<Utf8> token) synaCompareChanges =
-    _synaLib
-        .lookup<NativeFunction<synaCompareChanges_func>>(
-          'synaCompareChanges',
-        )
-        .asFunction<SynaCompareChanges>();
-
-final int Function(Pointer<Utf8> filePath, Pointer<Utf8> uploadHost)
-synaUpload = _synaLib
-    .lookup<NativeFunction<synaUpload_func>>('synaUpload')
-    .asFunction<SynaUpload>();
-
-final int Function() synaStartHttpServer = _synaLib
-    .lookup<NativeFunction<synaStartHttpServer_func>>('synaStartHttpServer')
-    .asFunction<SynaStartHttpServer>();
-
-final int Function() synaStopHttpServer = _synaLib
-    .lookup<NativeFunction<synaStopHttpServer_func>>('synaStopHttpServer')
-    .asFunction<SynaStopHttpServer>();
+final synaesthesia = SynaesthesiaLibrary.instance;
 
 enum SyncMode { server, client }
 
@@ -171,6 +88,18 @@ String formatBytes(int bytes, {int decimalPlaces = 2}) {
 
   double value = bytes / pow(base, exponent);
   return '${value.toStringAsFixed(decimalPlaces)} ${units[exponent]}';
+}
+
+Future<String> _getActualUploadDir() async {
+  try {
+    final resultPtr = synaesthesia.synaGetUploadDir();
+    final resultStr = resultPtr.toDartString();
+    malloc.free(resultPtr);
+    return resultStr;
+  } catch (e) {
+    _log("获取上传目录失败: $e");
+    return "未知目录";
+  }
 }
 
 class MyApp extends StatelessWidget {
@@ -380,11 +309,11 @@ class _SyncPageState extends State<SyncPage> {
                                           await configFile.writeAsString(json.encode(config));
 
                                           final configPathPtr = configFile.path.toNativeUtf8().cast<ffi.Utf8>();
-                                          final initResult = synaInit(configPathPtr);
+                                          final initResult = synaesthesia.synaInit(configPathPtr);
                                           malloc.free(configPathPtr);
 
                                           if (initResult == 0) {
-                                            final startResult = synaStartHttpServer();
+                                            final startResult = synaesthesia.synaStartHttpServer();
                                             if (startResult == 0) {
                                               ScaffoldMessenger.of(context).showSnackBar(
                                                 const SnackBar(
@@ -418,7 +347,7 @@ class _SyncPageState extends State<SyncPage> {
                                       } else {
 
                                         try {
-                                          final stopResult = synaStopHttpServer();
+                                          final stopResult = synaesthesia.synaStopHttpServer();
                                           if (stopResult == 0) {
                                             ScaffoldMessenger.of(context).showSnackBar(
                                               const SnackBar(
@@ -469,7 +398,13 @@ class _SyncPageState extends State<SyncPage> {
                               ),
                             ),
                             const SizedBox(height: 8),
-                            Text('上传目录: ${appState.watchPath}'),
+                            FutureBuilder<String>(
+                              future: _getActualUploadDir(),
+                              builder: (context, snapshot) {
+                                String uploadDir = snapshot.data ?? appState.watchPath;
+                                return Text('上传目录: $uploadDir');
+                              },
+                            ),
                             Text('端口: 9178'),
                             Text('Token认证: ${appState.httpToken.isNotEmpty ? "已启用" : "已禁用"}'),
                           ],
@@ -618,7 +553,7 @@ class _SyncPageState extends State<SyncPage> {
                               final hostPtr = host.toNativeUtf8().cast<ffi.Utf8>();
                               final tokenPtr = appState.httpToken.toNativeUtf8().cast<ffi.Utf8>();
 
-                              final resultPtr = synaCompareChanges(hostPtr, tokenPtr);
+                              final resultPtr = synaesthesia.synaCompareChanges(hostPtr, tokenPtr);
                               final resultStr = resultPtr.toDartString();
 
                               malloc.free(hostPtr);
@@ -678,6 +613,8 @@ class _WatcherPageState extends State<WatcherPage> {
     super.dispose();
   }
 
+  
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<MyAppState>();
@@ -702,7 +639,7 @@ class _WatcherPageState extends State<WatcherPage> {
                 try {
                   final pathStr = appState.watchPath;
                   final pathPtr = pathStr.toNativeUtf8().cast<ffi.Utf8>();
-                  final resultPtr = synaListFiles(pathPtr.cast());
+                  final resultPtr = listFiles(pathPtr.cast());
                   final resultStr = resultPtr.toDartString();
 
                   malloc.free(pathPtr);
@@ -984,18 +921,31 @@ Widget _buildComparisonResultDialog(
 
 Future<bool> _performUpload(String token, String localPath) async {
   ffi.Pointer<Utf8>? tokenPtr;
+  ffi.Pointer<Utf8>? hostPtr;
 
   try {
     _log("开始上传文件，使用Token进行认证");
 
     final tokenStr = token;
+    final hostStr = 'http://${MyAppState().httpHost}:9178';
     tokenPtr = tokenStr.toNativeUtf8().cast<ffi.Utf8>();
-    final resultPtr = synaCompareWithServer(tokenPtr);
+    hostPtr = hostStr.toNativeUtf8().cast<ffi.Utf8>();
+    final resultPtr = synaesthesia.synaCompareChanges(hostPtr, tokenPtr);
+    
+    if (resultPtr == nullptr) {
+      _log("服务器比较返回空指针");
+      return false;
+    }
+    
     final resultStr = resultPtr.toDartString();
 
-    malloc.free(resultPtr);
-
     _log("服务器比较结果: $resultStr");
+
+    malloc.free(resultPtr);
+    malloc.free(hostPtr);
+    malloc.free(tokenPtr);
+    hostPtr = null;
+    tokenPtr = null;
 
     await Future.delayed(const Duration(seconds: 2));
 
@@ -1008,6 +958,9 @@ Future<bool> _performUpload(String token, String localPath) async {
     try {
       if (tokenPtr != null) {
         malloc.free(tokenPtr);
+      }
+      if (hostPtr != null) {
+        malloc.free(hostPtr);
       }
     } catch (e) {
       _log("释放内存时出现警告: $e");
