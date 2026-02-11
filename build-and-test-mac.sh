@@ -1,5 +1,5 @@
 flutter clean
 cd lib/libsynaesthesia
-./build-macos.sh
+bash ./build-macos.sh
 cd ../..
 flutter build macos

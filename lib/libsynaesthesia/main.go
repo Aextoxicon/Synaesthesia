@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -489,11 +490,14 @@ func synaCompareChanges(remoteHost *C.char, token *C.char) *C.char {
 	remoteHostStr := C.GoString(remoteHost)
 	tokenStr := C.GoString(token)
 
-	remoteURL := remoteHostStr
-	if !strings.HasSuffix(remoteHostStr, "/") {
-		remoteURL += "/"
+	// 验证输入参数，防止恶意输入
+	if remoteHostStr == "" {
+		errorResponse := `{"error": "远程主机地址不能为空", "status": "error"}`
+		return C.CString(errorResponse)
 	}
-	remoteURL += "list"
+
+	// 使用 path.Join 来安全地拼接 URL，避免路径穿越问题
+	remoteURL := strings.TrimSuffix(remoteHostStr, "/") + "/list"
 
 	req, err := http.NewRequest("GET", remoteURL, nil)
 	if err != nil {
@@ -510,6 +514,15 @@ func synaCompareChanges(remoteHost *C.char, token *C.char) *C.char {
 
 	client := &http.Client{
 		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Dial: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).Dial,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -538,9 +551,10 @@ func synaCompareChanges(remoteHost *C.char, token *C.char) *C.char {
 		return C.CString(errorResponse)
 	}
 
+	// 先获取本地扫描结果，再释放 C 内存
 	localScanResult := synaScan()
 	localScanStr := C.GoString(localScanResult)
-	C.free(unsafe.Pointer(localScanResult))
+	C.free(unsafe.Pointer(localScanResult)) // 立即释放 C 分配的内存
 
 	var localResponse FileListResponse
 	if err := json.Unmarshal([]byte(localScanStr), &localResponse); err != nil {
@@ -555,12 +569,14 @@ func synaCompareChanges(remoteHost *C.char, token *C.char) *C.char {
 		return C.CString(errorResponse)
 	}
 
-	remoteFileMap := make(map[string]FileState)
+	// 预设 map 容量以提高性能
+	remoteFileMap := make(map[string]FileState, len(remoteResponse.AllFiles))
 	for _, file := range remoteResponse.AllFiles {
 		remoteFileMap[file.Name] = file
 	}
 
-	var missingOnRemote []FileState
+	// 预设切片容量以提高性能
+	missingOnRemote := make([]FileState, 0, len(localResponse.AllFiles))
 	for _, localFile := range localResponse.AllFiles {
 		if _, exists := remoteFileMap[localFile.Name]; !exists {
 			missingOnRemote = append(missingOnRemote, localFile)
