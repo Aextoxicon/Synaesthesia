@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.aextoxicon.file_syncer"
+    namespace = "com.aextoxicon.synaesthesia"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -20,7 +20,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.aextoxicon.file_syncer"
+        applicationId = "com.aextoxicon.synaesthesia"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

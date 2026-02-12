@@ -1,4 +1,4 @@
-package com.aextoxicon.file_syncer
+package com.aextoxicon.synaesthesia
 
 import io.flutter.embedding.android.FlutterActivity
 

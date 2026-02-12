@@ -323,11 +323,7 @@ class _SyncPageState extends State<SyncPage> {
                                           };
 
                                           final configFile = File('${appState.watchPath}/.syna/.server_config.json');
-                                          if (configFile.existsSync()) {
-                                            configFile.deleteSync();
-                                          } else {
-                                            Directory(appState.watchPath + '/.syna').createSync(recursive: true);
-                                          }
+                                          Directory(appState.watchPath + '/.syna').createSync(recursive: true);
                                           await configFile.writeAsString(json.encode(config));
 
                                           final configPathPtr = configFile.path.toNativeUtf8().cast<ffi.Utf8>();

@@ -1,7 +1,0 @@
-{
-    "uploadDir": ".",
-    "useCompare": false,
-    "apiToken": "your-token",
-    "port": 9178,
-    "useToken": false
-}
