@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:math';
-import 'package:flutter/material.dart';
+import 'package:fluent_ui/fluent_ui.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'synaesthesia_dart.dart';
@@ -125,11 +125,15 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
       create: (context) => MyAppState(),
-      child: MaterialApp(
-        title: 'flutter-demo',
-        theme: ThemeData(
-          useMaterial3: true,
-          colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+      child: FluentApp(
+        title: 'Synaesthesia',
+        theme: FluentThemeData(
+          brightness: Brightness.light,
+          accentColor: Colors.blue,
+        ),
+        darkTheme: FluentThemeData(
+          brightness: Brightness.dark,
+          accentColor: Colors.blue,
         ),
         home: const Pages(),
       ),
@@ -137,35 +141,53 @@ class MyApp extends StatelessWidget {
   }
 }
 
-class Pages extends StatelessWidget {
+class Pages extends StatefulWidget {
   const Pages({super.key});
+
+  @override
+  State<Pages> createState() => _PagesState();
+}
+
+class _PagesState extends State<Pages> {
+  int _currentIndex = 0;
 
   @override
   Widget build(BuildContext context) {
     return Consumer<MyAppState>(
       builder: (context, appState, child) {
-        return Scaffold(
-          body: SyncPage(selectedTab: appState.currentIdx),
-          bottomNavigationBar: BottomNavigationBar(
-            currentIndex: appState.currentIdx,
-            onTap: (index) {
-              appState.setIdx(index);
-              if (index == 0) {
-                appState.setSyncMode(SyncMode.server);
-              } else {
-                appState.setSyncMode(SyncMode.client);
-              }
-            },
-            items: const [
-              BottomNavigationBarItem(
-                icon: Icon(Icons.computer),
-                label: '服务器模式',
-              ),
-              BottomNavigationBarItem(
-                icon: Icon(Icons.laptop_mac),
-                label: '客户端模式',
-              ),
-            ],
+        // 根据当前索引更新appState
+        if (_currentIndex != appState.currentIdx) {
+          appState.setIdx(_currentIndex);
+        }
+        
+        return SafeArea(
+          child: NavigationView(
+            pane: NavigationPane(
+              displayMode: PaneDisplayMode.top,
+              selected: _currentIndex,
+              onChanged: (index) {
+                setState(() {
+                  _currentIndex = index;
+                });
+                if (index == 0) {
+                  appState.setSyncMode(SyncMode.server);
+                } else {
+                  appState.setSyncMode(SyncMode.client);
+                }
+              },
+              items: [
+                PaneItem(
+                  icon: Icon(FluentIcons.home),
+                  title: Text('服务器模式'),
+                  body: SyncPage(selectedTab: 0),
+                ),
+                PaneItem(
+                  icon: Icon(FluentIcons.settings),
+                  title: Text('客户端模式'),
+                  body: SyncPage(selectedTab: 1),
+                ),
+              ],
+            ),
           ),
         );
       },
@@ -239,14 +261,35 @@ class SyncPage extends StatefulWidget {
 }
 
 class _SyncPageState extends State<SyncPage> {
+  void _showMessage(BuildContext context, String message) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        Future.delayed(const Duration(seconds: 2), () {
+          Navigator.of(context).pop();
+        });
+        return ContentDialog(
+          title: const Text('提示'),
+          content: Text(message),
+          actions: [
+            Button(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('确定'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<MyAppState>();
     bool isServerMode = widget.selectedTab == 0;
 
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: SafeArea(
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -256,7 +299,6 @@ class _SyncPageState extends State<SyncPage> {
 
             if (isServerMode) ...[
               Card(
-                elevation: 2,
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
@@ -264,7 +306,7 @@ class _SyncPageState extends State<SyncPage> {
                     children: [
                       SizedBox(
                         width: double.infinity,
-                        child: ElevatedButton(
+                        child: Button(
                           onPressed: () async {
                             String? selectedDirectory = await FilePicker
                                 .platform
@@ -282,25 +324,18 @@ class _SyncPageState extends State<SyncPage> {
                       ),
                       const SizedBox(height: 16),
 
-
-                      TextField(
-                        decoration: const InputDecoration(
-                          labelText: '访问令牌',
-                          hintText: '请输入访问令牌',
-                          border: OutlineInputBorder(),
-                        ),
-                        obscureText: true,
+                      PasswordBox(
+                        placeholder: '请输入访问令牌',
                         onChanged: (value) => appState.httpToken = value,
                       ),
                       const SizedBox(height: 16),
-
 
                       Consumer<MyAppState>(
                         builder: (context, appState, child) {
                           bool isServerRunning = appState.isServerRunning;
                           return SizedBox(
                             width: double.infinity,
-                            child: ElevatedButton(
+                            child: Button(
                               onPressed: appState.watchPath.isEmpty
                                   ? null
                                   : () async {
@@ -317,61 +352,31 @@ class _SyncPageState extends State<SyncPage> {
                                           if (initResult == 0) {
                                             final startResult = await synaesthesiaDart.synaStartHttpServer();
                                             if (startResult == 0) {
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                const SnackBar(
-                                                  content: Text('服务器启动成功'),
-                                                ),
-                                              );
-
+                                              _showMessage(context, '服务器启动成功');
 
                                               appState.setServerRunning(true);
                                             } else {
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                const SnackBar(
-                                                  content: Text('服务器启动失败'),
-                                                ),
-                                              );
+                                              _showMessage(context, '服务器启动失败');
                                             }
                                           } else {
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              SnackBar(
-                                                content: Text('服务器初始化失败: $initResult'),
-                                              ),
-                                            );
+                                            _showMessage(context, '服务器初始化失败: $initResult');
                                           }
                                         } catch (e) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(
-                                              content: Text('启动服务器时出错: $e'),
-                                            ),
-                                          );
+                                          _showMessage(context, '启动服务器时出错: $e');
                                         }
                                       } else {
 
                                         try {
                                           final stopResult = await synaesthesiaDart.synaStopHttpServer();
                                           if (stopResult == 0) {
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              const SnackBar(
-                                                content: Text('服务器已停止'),
-                                              ),
-                                            );
-
+                                            _showMessage(context, '服务器已停止');
 
                                             appState.setServerRunning(false);
                                           } else {
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              const SnackBar(
-                                                content: Text('停止服务器失败'),
-                                              ),
-                                            );
+                                            _showMessage(context, '停止服务器失败');
                                           }
                                         } catch (e) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(
-                                              content: Text('停止服务器时出错: $e'),
-                                            ),
-                                          );
+                                          _showMessage(context, '停止服务器时出错: $e');
                                         }
                                       }
                                     },
@@ -381,7 +386,6 @@ class _SyncPageState extends State<SyncPage> {
                         },
                       ),
                       const SizedBox(height: 12),
-
 
                       Container(
                         padding: const EdgeInsets.all(12),
@@ -419,7 +423,6 @@ class _SyncPageState extends State<SyncPage> {
             ] else ...[
 
               Card(
-                elevation: 2,
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
@@ -435,12 +438,8 @@ class _SyncPageState extends State<SyncPage> {
                       ),
                       const SizedBox(height: 16),
 
-                      TextField(
-                        decoration: const InputDecoration(
-                          labelText: '服务器地址',
-                          hintText: '输入服务器IP地址',
-                          border: OutlineInputBorder(),
-                        ),
+                      TextBox(
+                        placeholder: '输入服务器IP地址',
                         keyboardType: TextInputType.url,
                         onChanged: (value) => appState.httpHost = value,
                       ),
@@ -448,7 +447,7 @@ class _SyncPageState extends State<SyncPage> {
 
                       SizedBox(
                         width: double.infinity,
-                        child: ElevatedButton(
+                        child: Button(
                           onPressed: () async {
                             String? selectedDirectory = await FilePicker
                                 .platform
@@ -468,19 +467,18 @@ class _SyncPageState extends State<SyncPage> {
 
                       SizedBox(
                         width: double.infinity,
-                        child: ElevatedButton(
+                        child: Button(
                           onPressed: () async {
                             try {
-
-                              final result = await showDialog<bool>(
+                              final result = showDialog<bool>(
                                 context: context,
                                 builder: (BuildContext context) {
-                                  return const AlertDialog(
-                                    title: Text('同步进度'),
+                                  return ContentDialog(
+                                    title: const Text('同步进度'),
                                     content: Column(
                                       mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        CircularProgressIndicator(),
+                                      children: const [
+                                        ProgressRing(),
                                         SizedBox(height: 16),
                                         Text('正在同步文件...'),
                                       ],
@@ -490,24 +488,12 @@ class _SyncPageState extends State<SyncPage> {
                               );
 
                               if (result == true) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('同步完成'),
-                                  ),
-                                );
+                                _showMessage(context, '同步完成');
                               } else {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('同步失败或取消'),
-                                  ),
-                                );
+                                _showMessage(context, '同步失败或取消');
                               }
                             } catch (e) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('同步出错: $e'),
-                                ),
-                              );
+                              _showMessage(context, '同步出错: $e');
                             }
                           },
                           child: const Text('开始同步到服务器'),
@@ -515,13 +501,8 @@ class _SyncPageState extends State<SyncPage> {
                       ),
                       const SizedBox(height: 12),
 
-                      TextField(
-                        decoration: const InputDecoration(
-                          labelText: '访问令牌',
-                          hintText: '请输入访问令牌',
-                          border: OutlineInputBorder(),
-                        ),
-                        obscureText: true,
+                      PasswordBox(
+                        placeholder: '请输入访问令牌',
                         onChanged: (value) => appState.httpToken = value,
                       ),
                       
@@ -530,31 +511,20 @@ class _SyncPageState extends State<SyncPage> {
                       if (!isServerMode) ...[
                         SizedBox(
                           width: double.infinity,
-                          child: ElevatedButton(
+                          child: Button(
                             onPressed: () async {
                               try {
-                                final snackBar = SnackBar(
-                                  content: Text('正在搜索局域网中的服务器...'),
-                                );
-                                ScaffoldMessenger.of(context).showSnackBar(snackBar);
+                                _showMessage(context, '正在搜索局域网中的服务器...');
                                 
                                 final servers = await synaesthesiaDart.discoverServers();
                                 
                                 if (servers.isEmpty) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text('未找到局域网中的服务器'),
-                                    ),
-                                  );
+                                  _showMessage(context, '未找到局域网中的服务器');
                                 } else {
                                   _showServerDiscoveryDialog(context, servers);
                                 }
                               } catch (e) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text('服务器发现失败: $e'),
-                                  ),
-                                );
+                                _showMessage(context, '服务器发现失败: $e');
                               }
                             },
                             child: const Text('发现局域网服务器'),
@@ -568,7 +538,6 @@ class _SyncPageState extends State<SyncPage> {
               ),
 
               Card(
-                elevation: 2,
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
@@ -586,7 +555,7 @@ class _SyncPageState extends State<SyncPage> {
 
                       SizedBox(
                         width: double.infinity,
-                        child: ElevatedButton(
+                        child: Button(
                           onPressed: () async {
                             try {
                               final result = await synaesthesiaDart.synaCompareChanges(
@@ -595,25 +564,12 @@ class _SyncPageState extends State<SyncPage> {
                               );
 
                               if (result['status'] == 'success') {
-                                showDialog(
-                                  context: context,
-                                  builder: (BuildContext context) {
-                                    return _buildComparisonResultDialog(context, result);
-                                  },
-                                );
+                                _showComparisonResultDialog(context, result);
                               } else {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text('比较失败: ${result['error']}'),
-                                  ),
-                                );
+                                _showMessage(context, '比较失败: ${result['error']}');
                               }
                             } catch (e) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('比较出错: $e'),
-                                ),
-                              );
+                              _showMessage(context, '比较出错: $e');
                             }
                           },
                           child: const Text('比较本地与远程文件'),
@@ -639,6 +595,27 @@ class WatcherPage extends StatefulWidget {
 }
 
 class _WatcherPageState extends State<WatcherPage> {
+  void _showMessage(BuildContext context, String message) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        Future.delayed(const Duration(seconds: 2), () {
+          Navigator.of(context).pop();
+        });
+        return ContentDialog(
+          title: const Text('提示'),
+          content: Text(message),
+          actions: [
+            Button(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('确定'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
     super.dispose();
@@ -649,21 +626,18 @@ class _WatcherPageState extends State<WatcherPage> {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<MyAppState>();
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: SafeArea(
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('监控路径: ${appState.watchPath}'),
             const SizedBox(height: 16),
-            ElevatedButton(
+            Button(
               onPressed: () async {
                 if (appState.watchPath.isEmpty) {
-                  final snackBar = SnackBar(
-                    content: Text('请先选择一个监控路径'),
-                  );
-                  ScaffoldMessenger.of(context).showSnackBar(snackBar);
+                  _showMessage(context, '请先选择一个监控路径');
                   return;
                 }
 
@@ -672,19 +646,13 @@ class _WatcherPageState extends State<WatcherPage> {
                   
                   final files = await synaesthesiaDart.synaScan();
 
-                  final snackBar = SnackBar(
-                    content: Text('Dart扫描完成，找到${files.length}个文件'),
-                  );
-                  ScaffoldMessenger.of(context).showSnackBar(snackBar);
+                  _showMessage(context, 'Dart扫描完成，找到${files.length}个文件');
 
                   appState.updateLastEvent(
                     '扫描目录: ${appState.watchPath} (${files.length}个文件)',
                   );
                 } catch (e) {
-                  final snackBar = SnackBar(
-                    content: Text('CGO扫描失败: $e'),
-                  );
-                  ScaffoldMessenger.of(context).showSnackBar(snackBar);
+                  _showMessage(context, 'CGO扫描失败: $e');
                 }
               },
               child: const Text('使用CGO扫描目录'),
@@ -697,27 +665,19 @@ class _WatcherPageState extends State<WatcherPage> {
                   children: [
                     Text(
                       '文件变更历史:',
-                      style: Theme.of(context).textTheme.bodyLarge,
+                      style: FluentTheme.of(context).typography.bodyLarge,
                     ),
                     const SizedBox(height: 8),
                     ...appState.eventHistory
                         .map(
                           (event) => Column(
                             children: [
-                              ListTile(
-                                leading: const Icon(Icons.history),
-                                title: Text(
-                                  event,
-                                  style: Theme.of(context).textTheme.bodyMedium,
-                                ),
+                              InfoLabel(
+                                label: '历史记录',
+                                child: Text(event),
                               ),
                               if (event != appState.eventHistory.last)
-                                Divider(
-                                  height: 1,
-                                  thickness: 1,
-                                  color: Colors.grey[300],
-                                  indent: 72,
-                                ),
+                                Divider(),
                             ],
                           ),
                         )
@@ -777,7 +737,7 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
 
     _logManager.addListener(_logListener);
 
-    Future.delayed(Duration(seconds: 2), () {
+    Future.delayed(const Duration(seconds: 2), () {
       if (mounted) {
         setState(() {
           _isCompleted = true;
@@ -796,20 +756,16 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
+    return ContentDialog(
       title: Row(
         children: [
           const Text('文件上传进度'),
           const SizedBox(width: 10),
           if (!_isCompleted)
-            const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
+            const ProgressRing()
           else
             Icon(
-              _isSuccess ? Icons.check_circle : Icons.error,
+              _isSuccess ? FluentIcons.check_mark : FluentIcons.error,
               color: _isSuccess ? Colors.green : Colors.red,
             ),
         ],
@@ -864,7 +820,7 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
       ),
       actions: [
         if (_isCompleted)
-          TextButton(
+          Button(
             onPressed: () {
               Navigator.of(context).pop(_isSuccess);
             },
@@ -879,7 +835,7 @@ void _showServerDiscoveryDialog(BuildContext context, List<Map<String, dynamic>>
   showDialog(
     context: context,
     builder: (context) {
-      return AlertDialog(
+      return ContentDialog(
         title: const Text('发现的服务器'),
         content: SizedBox(
           width: double.maxFinite,
@@ -889,24 +845,50 @@ void _showServerDiscoveryDialog(BuildContext context, List<Map<String, dynamic>>
             itemBuilder: (context, index) {
               final server = servers[index];
               return Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                child: ListTile(
-                  leading: const Icon(Icons.computer),
-                  title: Text('${server['host']}:${server['port']}'),
-                  subtitle: Text('IP: ${server['address']}'),
-                  trailing: TextButton(
-                    onPressed: () {
-                      final appState = context.read<MyAppState>();
-                      appState.httpHost = server['host'].toString();
-                      Navigator.of(context).pop();
-                      
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('已选择服务器: ${server['host']}:${server['port']}'),
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Row(
+                    children: [
+                      Icon(FluentIcons.home),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('${server['host']}:${server['port']}'),
+                            Text('IP: ${server['address']}'),
+                          ],
                         ),
-                      );
-                    },
-                    child: const Text('选择'),
+                      ),
+                      Button(
+                        onPressed: () {
+                          final appState = context.read<MyAppState>();
+                          appState.httpHost = server['host'].toString();
+                          Navigator.of(context).pop();
+                          
+                          // 使用ContentDialog显示消息
+                          showDialog(
+                            context: context,
+                            builder: (context) {
+                              Future.delayed(const Duration(seconds: 2), () {
+                                Navigator.of(context).pop();
+                              });
+                              return ContentDialog(
+                                title: const Text('提示'),
+                                content: Text('已选择服务器: ${server['host']}:${server['port']}'),
+                                actions: [
+                                  Button(
+                                    onPressed: () => Navigator.of(context).pop(),
+                                    child: const Text('确定'),
+                                  ),
+                                ],
+                              );
+                            },
+                          );
+                        },
+                        child: const Text('选择'),
+                      ),
+                    ],
                   ),
                 ),
               );
@@ -914,7 +896,7 @@ void _showServerDiscoveryDialog(BuildContext context, List<Map<String, dynamic>>
           ),
         ),
         actions: [
-          TextButton(
+          Button(
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('关闭'),
           ),
@@ -924,45 +906,63 @@ void _showServerDiscoveryDialog(BuildContext context, List<Map<String, dynamic>>
   );
 }
 
-Widget _buildComparisonResultDialog(
+void _showComparisonResultDialog(
   BuildContext context,
   Map<String, dynamic> result,
 ) {
-  return AlertDialog(
-    title: const Text('文件比较结果'),
-    content: SizedBox(
-      width: double.maxFinite,
-      height: 300,
-      child: ListView.builder(
-        itemCount: result['files'].length,
-        itemBuilder: (context, index) {
-          final file = result['files'][index];
-          return ListTile(
-            leading: Icon(
-              file['status'] == 'added'
-                  ? Icons.add_circle
-                  : file['status'] == 'modified'
-                      ? Icons.edit
-                      : Icons.remove_circle,
-              color: file['status'] == 'added'
-                  ? Colors.green
-                  : file['status'] == 'modified'
-                      ? Colors.blue
-                      : Colors.red,
-            ),
-            title: Text(file['name']),
-            subtitle: Text(
-              '本地: ${file['localSize']} 字节\n远程: ${file['remoteSize']} 字节',
-            ),
-          );
-        },
-      ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.of(context).pop(),
-        child: const Text('关闭'),
-      ),
-    ],
+  showDialog(
+    context: context,
+    builder: (context) {
+      return ContentDialog(
+        title: const Text('文件比较结果'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 300,
+          child: ListView.builder(
+            itemCount: result['files'].length,
+            itemBuilder: (context, index) {
+              final file = result['files'][index];
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Row(
+                    children: [
+                      Icon(
+                        file['status'] == 'added'
+                            ? FluentIcons.add
+                            : file['status'] == 'modified'
+                                ? FluentIcons.edit
+                                : FluentIcons.remove,
+                        color: file['status'] == 'added'
+                            ? Colors.green
+                            : file['status'] == 'modified'
+                                ? Colors.blue
+                                : Colors.red,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(file['path']),
+                            Text('状态: ${file['status']}'),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          Button(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      );
+    },
   );
 }
