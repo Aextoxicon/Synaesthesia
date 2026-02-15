@@ -1,2 +1,0 @@
-$env:CGO_ENABLED=1; $env:GOOS="android"; $env:GOARCH="arm64"; $env:CC="F:\Android\ndk\29.0.14206865\toolchains\llvm\prebuilt\windows-x86_64\bin\aarch64-linux-android21-clang.cmd"; go build -buildmode=c-shared -o ../../../android/app/src/main/jniLibs/arm64-v8a/libsynaesthesia.so .
-echo "Android arm64-v8a built successfully!"

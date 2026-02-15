@@ -1,18 +1,14 @@
 import 'dart:async';
-import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:math';
-import 'dart:ffi';
-import 'package:ffi/ffi.dart' as ffi;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
-import 'synaesthesia_ffi.dart';
-import 'package:ffi/ffi.dart';
+import 'synaesthesia_dart.dart';
 
-final synaesthesia = SynaesthesiaLibrary.instance;
+final synaesthesiaDart = SynaesthesiaDart();
 
 enum SyncMode { server, client }
 
@@ -91,7 +87,7 @@ String formatBytes(int bytes, {int decimalPlaces = 2}) {
 }
 
 Future<String> listFiles(String path) async {
-  final url = 'http://localhost:9178/list-files';
+  final url = 'http://localhost:9178//list';
   
   try {
     final httpClient = HttpClient();
@@ -114,9 +110,7 @@ Future<String> listFiles(String path) async {
 
 Future<String> _getActualUploadDir() async {
   try {
-    final resultPtr = synaesthesia.synaGetUploadDir();
-    final resultStr = resultPtr.toDartString();
-    malloc.free(resultPtr);
+    final resultStr = await synaesthesiaDart.synaGetUploadDir();
     return resultStr;
   } catch (e) {
     _log("获取上传目录失败: $e");
@@ -313,25 +307,15 @@ class _SyncPageState extends State<SyncPage> {
                                       if (!isServerRunning) {
 
                                         try {
+                                          synaesthesiaDart.uploadDir = appState.watchPath;
+                                          synaesthesiaDart.apiToken = appState.httpToken;
+                                          synaesthesiaDart.useToken = appState.httpToken.isNotEmpty;
+                                          synaesthesiaDart.port = 9178;
 
-                                          final config = {
-                                            'uploadDir': appState.watchPath,
-                                            'useCompare': false,
-                                            'apiToken': appState.httpToken,
-                                            'port': 9178,
-                                            'useToken': appState.httpToken.isNotEmpty,
-                                          };
-
-                                          final configFile = File('${appState.watchPath}/.syna/.server_config.json');
-                                          Directory(appState.watchPath + '/.syna').createSync(recursive: true);
-                                          await configFile.writeAsString(json.encode(config));
-
-                                          final configPathPtr = configFile.path.toNativeUtf8().cast<ffi.Utf8>();
-                                          final initResult = synaesthesia.synaInit(configPathPtr);
-                                          malloc.free(configPathPtr);
+                                          final initResult = await synaesthesiaDart.synaInit(appState.watchPath);
 
                                           if (initResult == 0) {
-                                            final startResult = synaesthesia.synaStartHttpServer();
+                                            final startResult = await synaesthesiaDart.synaStartHttpServer();
                                             if (startResult == 0) {
                                               ScaffoldMessenger.of(context).showSnackBar(
                                                 const SnackBar(
@@ -365,7 +349,7 @@ class _SyncPageState extends State<SyncPage> {
                                       } else {
 
                                         try {
-                                          final stopResult = synaesthesia.synaStopHttpServer();
+                                          final stopResult = await synaesthesiaDart.synaStopHttpServer();
                                           if (stopResult == 0) {
                                             ScaffoldMessenger.of(context).showSnackBar(
                                               const SnackBar(
@@ -540,6 +524,44 @@ class _SyncPageState extends State<SyncPage> {
                         obscureText: true,
                         onChanged: (value) => appState.httpToken = value,
                       ),
+                      
+                      const SizedBox(height: 16),
+
+                      if (!isServerMode) ...[
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: () async {
+                              try {
+                                final snackBar = SnackBar(
+                                  content: Text('正在搜索局域网中的服务器...'),
+                                );
+                                ScaffoldMessenger.of(context).showSnackBar(snackBar);
+                                
+                                final servers = await synaesthesiaDart.discoverServers();
+                                
+                                if (servers.isEmpty) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('未找到局域网中的服务器'),
+                                    ),
+                                  );
+                                } else {
+                                  _showServerDiscoveryDialog(context, servers);
+                                }
+                              } catch (e) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('服务器发现失败: $e'),
+                                  ),
+                                );
+                              }
+                            },
+                            child: const Text('发现局域网服务器'),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
                     ],
                   ),
                 ),
@@ -567,21 +589,12 @@ class _SyncPageState extends State<SyncPage> {
                         child: ElevatedButton(
                           onPressed: () async {
                             try {
-                              final host = 'http://${appState.httpHost}:9178';
-                              final hostPtr = host.toNativeUtf8().cast<ffi.Utf8>();
-                              final tokenPtr = appState.httpToken.toNativeUtf8().cast<ffi.Utf8>();
-
-                              final resultPtr = synaesthesia.synaCompareChanges(hostPtr, tokenPtr);
-                              final resultStr = resultPtr.toDartString();
-
-                              malloc.free(hostPtr);
-                              malloc.free(tokenPtr);
-                              malloc.free(resultPtr);
-
-                              final result = json.decode(resultStr);
+                              final result = await synaesthesiaDart.synaCompareChanges(
+                                'http://${appState.httpHost}:9178', 
+                                appState.httpToken
+                              );
 
                               if (result['status'] == 'success') {
-                                // 显示比较结果
                                 showDialog(
                                   context: context,
                                   builder: (BuildContext context) {
@@ -657,12 +670,10 @@ class _WatcherPageState extends State<WatcherPage> {
                 try {
                   final pathStr = appState.watchPath;
                   
-                  final resultStr = await listFiles(pathStr);
-
-                  List<dynamic> files = json.decode(resultStr);
+                  final files = await synaesthesiaDart.synaScan();
 
                   final snackBar = SnackBar(
-                    content: Text('CGO扫描完成，找到${files.length}个文件'),
+                    content: Text('Dart扫描完成，找到${files.length}个文件'),
                   );
                   ScaffoldMessenger.of(context).showSnackBar(snackBar);
 
@@ -864,120 +875,94 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
   }
 }
 
+void _showServerDiscoveryDialog(BuildContext context, List<Map<String, dynamic>> servers) {
+  showDialog(
+    context: context,
+    builder: (context) {
+      return AlertDialog(
+        title: const Text('发现的服务器'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 300,
+          child: ListView.builder(
+            itemCount: servers.length,
+            itemBuilder: (context, index) {
+              final server = servers[index];
+              return Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: ListTile(
+                  leading: const Icon(Icons.computer),
+                  title: Text('${server['host']}:${server['port']}'),
+                  subtitle: Text('IP: ${server['address']}'),
+                  trailing: TextButton(
+                    onPressed: () {
+                      final appState = context.read<MyAppState>();
+                      appState.httpHost = server['host'].toString();
+                      Navigator.of(context).pop();
+                      
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('已选择服务器: ${server['host']}:${server['port']}'),
+                        ),
+                      );
+                    },
+                    child: const Text('选择'),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
 Widget _buildComparisonResultDialog(
   BuildContext context,
   Map<String, dynamic> result,
 ) {
-  List<dynamic> missingOnRemote = result['missingOnRemote'] ?? [];
-  int localCount = result['localCount'] ?? 0;
-  int remoteCount = result['remoteCount'] ?? 0;
-  int missingCount = result['missingCount'] ?? 0;
-
   return AlertDialog(
     title: const Text('文件比较结果'),
     content: SizedBox(
       width: double.maxFinite,
-      child: ListView(
-        shrinkWrap: true,
-        children: [
-          ListTile(
-            title: Text('本地文件数: $localCount'),
-          ),
-          ListTile(
-            title: Text('远程文件数: $remoteCount'),
-          ),
-          ListTile(
-            title: Text('远程缺失文件数: $missingCount'),
-          ),
-          const Divider(),
-          
-          if (missingOnRemote.isNotEmpty) ...[
-            const Text(
-              '以下文件仅存在于本地（远程缺失）:',
-              style: TextStyle(fontWeight: FontWeight.bold),
+      height: 300,
+      child: ListView.builder(
+        itemCount: result['files'].length,
+        itemBuilder: (context, index) {
+          final file = result['files'][index];
+          return ListTile(
+            leading: Icon(
+              file['status'] == 'added'
+                  ? Icons.add_circle
+                  : file['status'] == 'modified'
+                      ? Icons.edit
+                      : Icons.remove_circle,
+              color: file['status'] == 'added'
+                  ? Colors.green
+                  : file['status'] == 'modified'
+                      ? Colors.blue
+                      : Colors.red,
             ),
-            ...missingOnRemote.map(
-              (file) => Card(
-                margin: const EdgeInsets.only(top: 8),
-                child: ListTile(
-                  leading: const Icon(Icons.file_copy, color: Colors.orange),
-                  title: Text(file['name'] ?? 'Unknown'),
-                  subtitle: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('大小: ${formatBytes(file['size'] ?? 0)}'),
-                      Text('修改时间: ${DateTime.parse(file['modTime'].toString()).toString()}'),
-                      if (file['sha256'] != null) Text('SHA256: ${file['sha256']}'),
-                    ],
-                  ),
-                ),
-              ),
-            ).toList(),
-          ] else ...[
-            const ListTile(
-              leading: Icon(Icons.check, color: Colors.green),
-              title: Text('远程服务器文件完整，无缺失文件'),
+            title: Text(file['name']),
+            subtitle: Text(
+              '本地: ${file['localSize']} 字节\n远程: ${file['remoteSize']} 字节',
             ),
-          ],
-        ],
+          );
+        },
       ),
     ),
     actions: [
       TextButton(
-        onPressed: () {
-          Navigator.of(context).pop();
-        },
+        onPressed: () => Navigator.of(context).pop(),
         child: const Text('关闭'),
       ),
     ],
   );
-}
-
-Future<bool> _performUpload(String token, String localPath) async {
-  ffi.Pointer<Utf8>? tokenPtr;
-  ffi.Pointer<Utf8>? hostPtr;
-
-  try {
-    _log("开始上传文件，使用Token进行认证");
-
-    final tokenStr = token;
-    final hostStr = 'http://${MyAppState().httpHost}:9178';
-    tokenPtr = tokenStr.toNativeUtf8().cast<ffi.Utf8>();
-    hostPtr = hostStr.toNativeUtf8().cast<ffi.Utf8>();
-    final resultPtr = synaesthesia.synaCompareChanges(hostPtr, tokenPtr);
-    
-    if (resultPtr == nullptr) {
-      _log("服务器比较返回空指针");
-      return false;
-    }
-    
-    final resultStr = resultPtr.toDartString();
-
-    _log("服务器比较结果: $resultStr");
-
-    malloc.free(resultPtr);
-    malloc.free(hostPtr);
-    malloc.free(tokenPtr);
-    hostPtr = null;
-    tokenPtr = null;
-
-    await Future.delayed(const Duration(seconds: 2));
-
-    _log("上传完成");
-    return true;
-  } catch (e) {
-    _log("上传失败: $e");
-    return false;
-  } finally {
-    try {
-      if (tokenPtr != null) {
-        malloc.free(tokenPtr);
-      }
-      if (hostPtr != null) {
-        malloc.free(hostPtr);
-      }
-    } catch (e) {
-      _log("释放内存时出现警告: $e");
-    }
-  }
 }

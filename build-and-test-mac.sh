@@ -1,5 +1,1 @@
-flutter clean
-cd lib/libsynaesthesia
-bash ./build-macos.sh
-cd ../..
-flutter build macos
+flutter pub run flutter_launcher_icons && flutter build macos
