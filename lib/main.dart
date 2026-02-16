@@ -163,7 +163,7 @@ class _PagesState extends State<Pages> {
         return SafeArea(
           child: NavigationView(
             pane: NavigationPane(
-              displayMode: PaneDisplayMode.top,
+              displayMode: _getDisplayMode(),
               selected: _currentIndex,
               onChanged: (index) {
                 setState(() {
@@ -192,6 +192,14 @@ class _PagesState extends State<Pages> {
         );
       },
     );
+  }
+  
+  _getDisplayMode() {
+    if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+      return PaneDisplayMode.auto;
+    } else {
+      return PaneDisplayMode.top;
+    }
   }
 }
 
