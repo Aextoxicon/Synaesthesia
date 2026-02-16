@@ -1,1 +1,1 @@
-flutter pub run flutter_launcher_icons && flutter build macos
+flutter pub run flutter_launcher_icons && flutter build macos && open build/macos/Build/Products/Release/flutter_application.app
