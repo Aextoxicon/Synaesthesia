@@ -86,12 +86,13 @@ String formatBytes(int bytes, {int decimalPlaces = 2}) {
   return '${value.toStringAsFixed(decimalPlaces)} ${units[exponent]}';
 }
 
-Future<String> listFiles(String path) async {
-  final url = 'http://localhost:9178//list';
+/// 将HttpClient作为参数传入，以便进行测试
+Future<String> listFiles(String path, {HttpClient? httpClient}) async {
+  final url = 'http://localhost:9178/list';
+  final client = httpClient ?? HttpClient();
   
   try {
-    final httpClient = HttpClient();
-    final request = await httpClient.postUrl(Uri.parse(url));
+    final request = await client.postUrl(Uri.parse(url));
     request.headers.set('Content-Type', 'application/json');
     
     final requestBody = json.encode({'path': path});
@@ -99,7 +100,10 @@ Future<String> listFiles(String path) async {
     
     final response = await request.close();
     final responseBody = await response.transform(utf8.decoder).join();
-    httpClient.close();
+    if (httpClient == null) {
+      // 只有在我们创建了HttpClient时才关闭它
+      client.close();
+    }
     
     return responseBody;
   } catch (e) {
@@ -274,7 +278,9 @@ class _SyncPageState extends State<SyncPage> {
       context: context,
       builder: (context) {
         Future.delayed(const Duration(seconds: 2), () {
-          Navigator.of(context).pop();
+          if (context.mounted) {
+            Navigator.of(context).pop();
+          }
         });
         return ContentDialog(
           title: const Text('提示'),

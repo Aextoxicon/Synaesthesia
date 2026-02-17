@@ -41,6 +41,7 @@ dependencies:
   flutter_background_service: ^5.1.0
   http: ^1.6.0
   fluent_ui: ^4.13.0
+  path: ^1.8.3
 
 flutter_launcher_icons:
   android: "launcher"
@@ -52,6 +53,8 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^2.0.0
+  mockito: ^5.4.0
+  build_runner: ^2.3.3
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your
