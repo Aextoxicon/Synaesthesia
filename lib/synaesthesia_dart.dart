@@ -105,9 +105,10 @@ class SynaesthesiaDart {
     }
 
     try {
+      // 绑定到端口0，让操作系统分配随机可用端口
       _broadcastSocket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
-        BROADCAST_PORT,
+        0,
       );
       
       _broadcastSocket!.broadcastEnabled = true;
@@ -120,7 +121,7 @@ class SynaesthesiaDart {
         _sendBroadcastMessage(localIp);
       });
       
-      print('Started UDP broadcast on port $BROADCAST_PORT');
+      print('Started UDP broadcast on port $BROADCAST_PORT from local port ${_broadcastSocket!.port}');
     } catch (e) {
       print('Failed to start UDP broadcast: $e');
     }
@@ -138,6 +139,7 @@ class SynaesthesiaDart {
     
     final data = utf8.encode(message);
     _broadcastSocket!.send(data, InternetAddress('255.255.255.255'), BROADCAST_PORT);
+    print('Broadcast message sent: $message');
   }
 
   Future<void> _stopBroadcast() async {
@@ -156,6 +158,7 @@ class SynaesthesiaDart {
     RawDatagramSocket? socket;
     
     try {
+      // 客户端绑定到固定的广播端口来监听
       socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, BROADCAST_PORT);
       
       final completer = Completer<List<Map<String, dynamic>>>();
@@ -167,6 +170,7 @@ class SynaesthesiaDart {
           while ((datagram = socket!.receive()) != null) {
             try {
               final message = utf8.decode(datagram!.data);
+              print('Received broadcast message: $message from ${datagram!.address.address}');
               final serverInfo = json.decode(message);
               
               if (serverInfo['type'] == 'server_discovery') {
@@ -183,14 +187,28 @@ class SynaesthesiaDart {
           }
         }
         
-        if (stopwatch.elapsed >= timeout && socket != null) {
-          completer.complete(servers);
-          socket!.close();
+        if (stopwatch.elapsed >= timeout) {
+          if (!completer.isCompleted) {
+            completer.complete(servers);
+          }
+          socket?.close();
         }
       });
       
+      // 主动发送发现请求，触发服务器响应
+      final discoveryMessage = json.encode({
+        'type': 'client_discovery',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
+      final discoveryData = utf8.encode(discoveryMessage);
+      socket.send(discoveryData, InternetAddress('255.255.255.255'), BROADCAST_PORT);
+      print('Sent discovery request');
+      
       return await completer.future.timeout(timeout, onTimeout: () {
-        socket?.close();
+        if (!completer.isCompleted) {
+          socket?.close();
+          return servers;
+        }
         return servers;
       });
     } catch (e) {
