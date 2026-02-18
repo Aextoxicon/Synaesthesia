@@ -397,9 +397,11 @@ class _SyncPageState extends State<SyncPage> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     // 延迟执行自动启动，确保上下文可用
+    final appState = context.read<MyAppState>();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final appState = context.read<MyAppState>();
-      _autoStartServerIfNeeded(context, appState);
+      if (mounted) {
+        _autoStartServerIfNeeded(context, appState);
+      }
     });
   }
 
