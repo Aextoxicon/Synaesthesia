@@ -924,6 +924,9 @@ void _showComparisonResultDialog(
   BuildContext context,
   Map<String, dynamic> result,
 ) {
+  // 安全地获取 files 列表
+  final files = result['files'] is List ? result['files'] : [];
+  
   showDialog(
     context: context,
     builder: (context) {
@@ -933,23 +936,26 @@ void _showComparisonResultDialog(
           width: double.maxFinite,
           height: 300,
           child: ListView.builder(
-            itemCount: result['files'].length,
+            itemCount: files.length,
             itemBuilder: (context, index) {
-              final file = result['files'][index];
+              final file = files[index];
+              final path = file is Map ? file['path']?.toString() ?? '未知路径' : '未知路径';
+              final status = file is Map ? file['status']?.toString() ?? 'unknown' : 'unknown';
+              
               return Card(
                 child: Padding(
                   padding: const EdgeInsets.all(8.0),
                   child: Row(
                     children: [
                       Icon(
-                        file['status'] == 'added'
+                        status == 'added'
                             ? FluentIcons.add
-                            : file['status'] == 'modified'
+                            : status == 'modified'
                                 ? FluentIcons.edit
                                 : FluentIcons.remove,
-                        color: file['status'] == 'added'
+                        color: status == 'added'
                             ? Colors.green
-                            : file['status'] == 'modified'
+                            : status == 'modified'
                                 ? Colors.blue
                                 : Colors.red,
                       ),
@@ -958,8 +964,8 @@ void _showComparisonResultDialog(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(file['path']),
-                            Text('状态: ${file['status']}'),
+                            Text(path),
+                            Text('状态: $status'),
                           ],
                         ),
                       ),
