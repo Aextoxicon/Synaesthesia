@@ -1,14 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:http/http.dart' as http;
-import 'package:http_parser/http_parser.dart';
+import 'package:dio/dio.dart';
+import 'package:nsd/nsd.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
-const int BROADCAST_PORT = 9179;
-const String BROADCAST_MESSAGE = 'SYNAESTHESIA_SERVER_DISCOVERY';
-const Duration BROADCAST_INTERVAL = Duration(seconds: 5);
+const String SERVICE_TYPE = '_synaesthesia._tcp';
 
 class FileState {
   final String name;
@@ -50,11 +48,9 @@ class SynaesthesiaDart {
   HttpServer? _httpServer;
   bool _isServerRunning = false;
   
-  RawDatagramSocket? _broadcastSocket;
-  Timer? _broadcastTimer;
+  Registration? _mdnsRegistration;
   String? _localIp;
 
-  // Public getter to check if server is running
   bool get isServerRunning => _isServerRunning;
 
   Future<String> _getAppConfigDir() async {
@@ -102,121 +98,85 @@ class SynaesthesiaDart {
     return 'localhost';
   }
 
-  Future<void> _startBroadcast() async {
-    if (_broadcastSocket != null) {
+  Future<void> _startMdnsBroadcast() async {
+    if (_mdnsRegistration != null) {
       return;
     }
 
     try {
-      // 绑定到端口0，让操作系统分配随机可用端口
-      _broadcastSocket = await RawDatagramSocket.bind(
-        InternetAddress.anyIPv4,
-        0,
-      );
-      
-      _broadcastSocket!.broadcastEnabled = true;
-      
       final localIp = await _getLocalIp();
-      
-      _sendBroadcastMessage(localIp);
-      
-      _broadcastTimer = Timer.periodic(BROADCAST_INTERVAL, (timer) {
-        _sendBroadcastMessage(localIp);
-      });
-      
-      print('Started UDP broadcast on port $BROADCAST_PORT from local port ${_broadcastSocket!.port}');
+      _mdnsRegistration = await register(
+        Service(
+          name: 'Synaesthesia-$localIp',
+          type: SERVICE_TYPE,
+          port: port,
+        ),
+      );
+      print('mDNS service registered: Synaesthesia on port $port');
     } catch (e) {
-      print('Failed to start UDP broadcast: $e');
+      print('Failed to register mDNS service: $e');
     }
   }
 
-  void _sendBroadcastMessage(String localIp) {
-    if (_broadcastSocket == null) return;
-    
-    final message = json.encode({
-      'type': 'server_discovery',
-      'host': localIp,
-      'port': port,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
-    });
-    
-    final data = utf8.encode(message);
-    _broadcastSocket!.send(data, InternetAddress('255.255.255.255'), BROADCAST_PORT);
-    print('Broadcast message sent: $message');
-  }
-
-  Future<void> _stopBroadcast() async {
-    _broadcastTimer?.cancel();
-    _broadcastTimer = null;
-    
-    if (_broadcastSocket != null) {
-      _broadcastSocket!.close();
-      _broadcastSocket = null;
-      print('Stopped UDP broadcast');
+  Future<void> _stopMdnsBroadcast() async {
+    if (_mdnsRegistration != null) {
+      await unregister(_mdnsRegistration!);
+      _mdnsRegistration = null;
+      print('mDNS service unregistered');
     }
   }
 
-  Future<List<Map<String, dynamic>>> discoverServers({Duration timeout = const Duration(seconds: 3)}) async {
+  Future<List<Map<String, dynamic>>> discoverServers({Duration timeout = const Duration(seconds: 8)}) async {
     final servers = <Map<String, dynamic>>[];
-    RawDatagramSocket? socket;
     
     try {
-      // 客户端绑定到固定的广播端口来监听
-      socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, BROADCAST_PORT);
-      
+      print('Starting mDNS discovery for $SERVICE_TYPE...');
+      final discovery = await startDiscovery(
+        SERVICE_TYPE, 
+        ipLookupType: IpLookupType.v4,
+      );
       final completer = Completer<List<Map<String, dynamic>>>();
-      final stopwatch = Stopwatch()..start();
       
-      socket.listen((event) {
-        if (event == RawSocketEvent.read && socket != null) {
-          Datagram? datagram;
-          while ((datagram = socket!.receive()) != null) {
-            try {
-              final message = utf8.decode(datagram!.data);
-              print('Received broadcast message: $message from ${datagram!.address.address}');
-              final serverInfo = json.decode(message);
-              
-              if (serverInfo['type'] == 'server_discovery') {
-                servers.add({
-                  'host': serverInfo['host'],
-                  'port': serverInfo['port'],
-                  'timestamp': serverInfo['timestamp'],
-                  'address': datagram!.address.address,
-                });
-              }
-            } catch (e) {
-              print('Failed to parse broadcast message: $e');
-            }
-          }
-        }
+      discovery.addServiceListener((service, status) async {
+        print('Service listener: ${service.name} - $status');
         
-        if (stopwatch.elapsed >= timeout) {
-          if (!completer.isCompleted) {
-            completer.complete(servers);
+        if (status == ServiceStatus.found) {
+          try {
+            final resolved = await resolve(service);
+            if (resolved != null) {
+              final host = resolved.host ?? '';
+              final port = resolved.port ?? 9178;
+              final ips = resolved.host != null ? [resolved.host!] : [];
+              if (resolved.host != null) {
+                ips.addAll(resolved.host!.split(','));
+              }
+              if (host.isNotEmpty || ips.isNotEmpty) {
+                servers.add({
+                  'host': host,
+                  'port': port,
+                  'name': resolved.name,
+                  'ips': ips,
+                  'timestamp': DateTime.now().millisecondsSinceEpoch,
+                });
+                print('Resolved service: ${resolved.name} at $host:$port (IPs: $ips)');
+              }
+            }
+          } catch (e) {
+            print('Failed to resolve service ${service.name}: $e');
           }
-          socket?.close();
         }
       });
       
-      // 主动发送发现请求，触发服务器响应
-      final discoveryMessage = json.encode({
-        'type': 'client_discovery',
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-      });
-      final discoveryData = utf8.encode(discoveryMessage);
-      socket.send(discoveryData, InternetAddress('255.255.255.255'), BROADCAST_PORT);
-      print('Sent discovery request');
-      
-      return await completer.future.timeout(timeout, onTimeout: () {
+      Future.delayed(timeout, () async {
+        await stopDiscovery(discovery);
         if (!completer.isCompleted) {
-          socket?.close();
-          return servers;
+          completer.complete(servers);
         }
-        return servers;
       });
+      
+      return await completer.future;
     } catch (e) {
-      print('Discovery error: $e');
-      socket?.close();
+      print('mDNS discovery error: $e');
       return servers;
     }
   }
@@ -231,6 +191,7 @@ class SynaesthesiaDart {
           'apiToken': apiToken ?? '',
           'port': port,
           'useToken': useToken,
+          'autoStart': true,
         };
         
         final configFilePath = await _getConfigFilePath();
@@ -331,7 +292,7 @@ class SynaesthesiaDart {
       _httpServer = await HttpServer.bind(InternetAddress.anyIPv4, port);
       _isServerRunning = true;
 
-      await _startBroadcast();
+      await _startMdnsBroadcast();
 
       _httpServer!.listen((request) async {
         try {
@@ -494,9 +455,26 @@ class SynaesthesiaDart {
       _httpServer = null;
       _isServerRunning = false;
       
-      await _stopBroadcast();
+      await _stopMdnsBroadcast();
     }
     return 0;
+  }
+
+  Future<Map<String, dynamic>?> loadConfig() async {
+    try {
+      final configFilePath = await _getConfigFilePath();
+      final configFile = File(configFilePath);
+      
+      if (!await configFile.exists()) {
+        return null;
+      }
+      
+      final configData = await configFile.readAsString();
+      return json.decode(configData) as Map<String, dynamic>;
+    } catch (e) {
+      print('loadConfig error: $e');
+      return null;
+    }
   }
 
   Future<int> synaUpload(String filePath, String uploadHost) async {
@@ -506,25 +484,20 @@ class SynaesthesiaDart {
         return -1;
       }
 
-      final uri = Uri.parse('$uploadHost/upload');
-      final request = http.MultipartRequest('POST', uri);
+      final dio = Dio();
+      final formData = FormData.fromMap({
+        'file': await MultipartFile.fromFile(filePath, filename: path.basename(filePath)),
+      });
 
-      if (useToken && apiToken != null) {
-        request.headers['Authorization'] = 'Bearer $apiToken';
-      }
-
-      final multipartFile = await http.MultipartFile.fromPath(
-        'file',
-        filePath,
-        contentType: MediaType('application', 'octet-stream'),
+      final options = Options(
+        method: 'POST',
+        headers: useToken && apiToken != null ? {'Authorization': 'Bearer $apiToken'} : {},
       );
-      request.files.add(multipartFile);
 
-      final response = await request.send();
+      final response = await dio.request('$uploadHost/upload', data: formData, options: options);
       
       if (response.statusCode != 200) {
-        final responseBody = await response.stream.bytesToString();
-        print('Upload failed: $responseBody');
+        print('Upload failed: ${response.data}');
         return -7;
       }
 
@@ -537,6 +510,7 @@ class SynaesthesiaDart {
 
   Future<Map<String, dynamic>> synaCompareChanges(String remoteHost, String token) async {
     try {
+      final dio = Dio();
       final remoteUrl = '$remoteHost/list';
       final remoteHeaders = <String, String>{};
       
@@ -547,12 +521,12 @@ class SynaesthesiaDart {
         }
       }
 
-      final remoteResponse = await http.get(Uri.parse(remoteUrl), headers: remoteHeaders);
-      if (remoteResponse.statusCode != 200) {
-        throw Exception('Remote list request failed with status: ${remoteResponse.statusCode}');
+      final response = await dio.get(remoteUrl, options: Options(headers: remoteHeaders));
+      if (response.statusCode != 200) {
+        throw Exception('Remote list request failed with status: ${response.statusCode}');
       }
 
-      final remoteData = json.decode(remoteResponse.body);
+      final remoteData = response.data;
       if (remoteData['status'] != 'success') {
         throw Exception('Remote response status is not success');
       }

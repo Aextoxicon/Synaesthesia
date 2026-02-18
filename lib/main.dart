@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:math';
+import 'package:path/path.dart' as path;
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
@@ -222,7 +223,6 @@ class MyAppState extends ChangeNotifier {
 
   void setIdx(int idx) {
     _currentIdx = idx;
-
     _syncMode = idx == 0 ? SyncMode.server : SyncMode.client;
     notifyListeners();
   }
@@ -233,7 +233,6 @@ class MyAppState extends ChangeNotifier {
     notifyListeners();
   }
 
-
   void setServerRunning(bool running) {
     _isServerRunning = running;
     notifyListeners();
@@ -242,14 +241,23 @@ class MyAppState extends ChangeNotifier {
   String httpHost = 'localhost';
   int httpPortC = 8080;
 
-  String httpToken = '';
-
   MyAppState() {
     _currentIdx = _syncMode == SyncMode.server ? 0 : 1;
+    _loadSavedConfig();
   }
 
-  void setWatchPath(String path) {
+  Future<void> _loadSavedConfig() async {
+    final config = await synaesthesiaDart.loadConfig();
+    if (config != null) {
+      watchPath = config['uploadDir'] as String? ?? '';
+      notifyListeners();
+    }
+  }
+
+  Future<void> setWatchPath(String path) async {
     watchPath = path;
+    synaesthesiaDart.uploadDir = path;
+    await synaesthesiaDart.synaInit(path);
     notifyListeners();
   }
 
@@ -260,8 +268,7 @@ class MyAppState extends ChangeNotifier {
     }
     lastEvent = event;
     notifyListeners();
-  }
-}
+  }}
 
 class SyncPage extends StatefulWidget {
   final int selectedTab;
@@ -296,6 +303,106 @@ class _SyncPageState extends State<SyncPage> {
     );
   }
 
+  Future<String> _getLocalIp() async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      
+      String? preferredIp;
+      List<String> allValidIps = [];
+      
+      for (final interface in interfaces) {
+        for (final addr in interface.addresses) {
+          if (addr.type == InternetAddressType.IPv4) {
+            final ip = addr.address;
+            // 过滤掉无效的IP地址
+            if (ip.startsWith('127.') || 
+                ip.startsWith('0.') || 
+                ip.startsWith('169.254.') ||
+                ip.startsWith('198.18.') ||  // Hyper-V virtual network
+                ip.startsWith('198.19.')) {   // Hyper-V virtual network
+              continue;
+            }
+            
+            allValidIps.add(ip);
+            
+            // 优先选择192.168.x.x网段
+            if (ip.startsWith('192.168.')) {
+              return ip;
+            }
+            // 其次选择10.x.x.x网段
+            else if (ip.startsWith('10.')) {
+              preferredIp ??= ip;
+            }
+            // 再次选择172.16-31.x.x网段
+            else if (ip.startsWith('172.')) {
+              final parts = ip.split('.');
+              if (parts.length == 4) {
+                final secondOctet = int.tryParse(parts[1]);
+                if (secondOctet != null && secondOctet >= 16 && secondOctet <= 31) {
+                  preferredIp ??= ip;
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // 如果找到了优选的IP，返回它
+      if (preferredIp != null) {
+        return preferredIp;
+      }
+      
+      // 如果没有优选IP，返回第一个有效的IP
+      if (allValidIps.isNotEmpty) {
+        return allValidIps.first;
+      }
+    } catch (e) {
+      print('Failed to get local IP address: $e');
+    }
+    return 'localhost';
+  }
+
+  Future<void> _autoStartServerIfNeeded(BuildContext context, MyAppState appState) async {
+    if (widget.selectedTab != 0 || appState.isServerRunning) {
+      return;
+    }
+    
+    if (appState.watchPath.isEmpty) {
+      return;
+    }
+
+    try {
+      synaesthesiaDart.uploadDir = appState.watchPath;
+      synaesthesiaDart.apiToken = '';
+      synaesthesiaDart.useToken = false;
+      synaesthesiaDart.port = 9178;
+
+      final initResult = await synaesthesiaDart.synaInit(appState.watchPath);
+
+      if (initResult == 0) {
+        final startResult = await synaesthesiaDart.synaStartHttpServer();
+        if (startResult == 0) {
+          appState.setServerRunning(true);
+        }
+      }
+    } catch (e) {
+      print('自动启动服务器失败: $e');
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 延迟执行自动启动，确保上下文可用
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final appState = context.read<MyAppState>();
+      _autoStartServerIfNeeded(context, appState);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<MyAppState>();
@@ -328,6 +435,8 @@ class _SyncPageState extends State<SyncPage> {
                             print('Selected Directory: $selectedDirectory');
                             if (selectedDirectory != null) {
                               appState.setWatchPath(selectedDirectory);
+                              // 选择目录后立即尝试启动服务器
+                              _autoStartServerIfNeeded(context, appState);
                             }
                           },
                           child: Text(
@@ -338,63 +447,42 @@ class _SyncPageState extends State<SyncPage> {
                       ),
                       const SizedBox(height: 16),
 
-                      PasswordBox(
-                        placeholder: '请输入访问令牌',
-                        onChanged: (value) => appState.httpToken = value,
-                      ),
-                      const SizedBox(height: 16),
-
                       Consumer<MyAppState>(
                         builder: (context, appState, child) {
                           bool isServerRunning = appState.isServerRunning;
+                          if (isServerRunning) {
+                            return const SizedBox.shrink();
+                          }
                           return SizedBox(
                             width: double.infinity,
                             child: Button(
                               onPressed: appState.watchPath.isEmpty
                                   ? null
                                   : () async {
-                                      if (!isServerRunning) {
+                                      try {
+                                        synaesthesiaDart.uploadDir = appState.watchPath;
+                                        synaesthesiaDart.apiToken = '';
+                                        synaesthesiaDart.useToken = false;
+                                        synaesthesiaDart.port = 9178;
 
-                                        try {
-                                          synaesthesiaDart.uploadDir = appState.watchPath;
-                                          synaesthesiaDart.apiToken = appState.httpToken;
-                                          synaesthesiaDart.useToken = appState.httpToken.isNotEmpty;
-                                          synaesthesiaDart.port = 9178;
+                                        final initResult = await synaesthesiaDart.synaInit(appState.watchPath);
 
-                                          final initResult = await synaesthesiaDart.synaInit(appState.watchPath);
-
-                                          if (initResult == 0) {
-                                            final startResult = await synaesthesiaDart.synaStartHttpServer();
-                                            if (startResult == 0) {
-                                              _showMessage(context, '服务器启动成功');
-
-                                              appState.setServerRunning(true);
-                                            } else {
-                                              _showMessage(context, '服务器启动失败');
-                                            }
+                                        if (initResult == 0) {
+                                          final startResult = await synaesthesiaDart.synaStartHttpServer();
+                                          if (startResult == 0) {
+                                            _showMessage(context, '服务器启动成功');
+                                            appState.setServerRunning(true);
                                           } else {
-                                            _showMessage(context, '服务器初始化失败: $initResult');
+                                            _showMessage(context, '服务器启动失败');
                                           }
-                                        } catch (e) {
-                                          _showMessage(context, '启动服务器时出错: $e');
+                                        } else {
+                                          _showMessage(context, '服务器初始化失败: $initResult');
                                         }
-                                      } else {
-
-                                        try {
-                                          final stopResult = await synaesthesiaDart.synaStopHttpServer();
-                                          if (stopResult == 0) {
-                                            _showMessage(context, '服务器已停止');
-
-                                            appState.setServerRunning(false);
-                                          } else {
-                                            _showMessage(context, '停止服务器失败');
-                                          }
-                                        } catch (e) {
-                                          _showMessage(context, '停止服务器时出错: $e');
-                                        }
+                                      } catch (e) {
+                                        _showMessage(context, '启动服务器时出错: $e');
                                       }
                                     },
-                              child: Text(isServerRunning ? '停止服务器' : '启动服务器'),
+                              child: const Text('启动服务器'),
                             ),
                           );
                         },
@@ -419,6 +507,19 @@ class _SyncPageState extends State<SyncPage> {
                             ),
                             const SizedBox(height: 8),
                             FutureBuilder<String>(
+                              future: _getLocalIp(),
+                              builder: (context, snapshot) {
+                                if (snapshot.hasData) {
+                                  return Text('本机IP: ${snapshot.data}');
+                                } else if (snapshot.hasError) {
+                                  return Text('本机IP: 获取失败');
+                                } else {
+                                  return Text('本机IP: 加载中...');
+                                }
+                              },
+                            ),
+                            const SizedBox(height: 8),
+                            FutureBuilder<String>(
                               future: _getActualUploadDir(),
                               builder: (context, snapshot) {
                                 String uploadDir = snapshot.data ?? appState.watchPath;
@@ -426,7 +527,6 @@ class _SyncPageState extends State<SyncPage> {
                               },
                             ),
                             Text('端口: 9178'),
-                            Text('Token认证: ${appState.httpToken.isNotEmpty ? "已启用" : "已禁用"}'),
                           ],
                         ),
                       ),
@@ -435,7 +535,6 @@ class _SyncPageState extends State<SyncPage> {
                 ),
               ),
             ] else ...[
-
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
@@ -482,70 +581,89 @@ class _SyncPageState extends State<SyncPage> {
                       SizedBox(
                         width: double.infinity,
                         child: Button(
-                          onPressed: () async {
-                            try {
-                              final result = showDialog<bool>(
-                                context: context,
-                                builder: (BuildContext context) {
-                                  return ContentDialog(
-                                    title: const Text('同步进度'),
-                                    content: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: const [
-                                        ProgressRing(),
-                                        SizedBox(height: 16),
-                                        Text('正在同步文件...'),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              );
+                          onPressed: (appState.watchPath.isEmpty || 
+                                     appState.httpHost.isEmpty || 
+                                     appState.httpHost == 'localhost')
+                              ? null
+                              : () async {
+                                  try {
+                                    synaesthesiaDart.uploadDir = appState.watchPath;
+                                    synaesthesiaDart.apiToken = '';
+                                    synaesthesiaDart.useToken = false;
+                                    synaesthesiaDart.port = 9178;
 
-                              if (result == true) {
-                                _showMessage(context, '同步完成');
-                              } else {
-                                _showMessage(context, '同步失败或取消');
-                              }
-                            } catch (e) {
-                              _showMessage(context, '同步出错: $e');
-                            }
-                          },
+                                    final comparisonResult = await synaesthesiaDart.synaCompareChanges(
+                                      'http://${appState.httpHost}:9178', 
+                                      ''
+                                    );
+
+                                    if (comparisonResult['status'] != 'success') {
+                                      _showMessage(context, '文件比较失败: ${comparisonResult['error']}');
+                                      return;
+                                    }
+
+                                    final missingFiles = comparisonResult['missingOnRemote'] as List;
+                                    
+                                    if (missingFiles.isEmpty) {
+                                      _showMessage(context, '所有文件已在服务器上，无需同步');
+                                      return;
+                                    }
+
+                                    bool syncSuccess = true;
+                                    int uploadedCount = 0;
+                                    
+                                    for (var fileJson in missingFiles) {
+                                      final relativePath = fileJson['relativePath'] as String;
+                                      final localFilePath = path.join(appState.watchPath, relativePath);
+                                      
+                                      final uploadResult = await synaesthesiaDart.synaUpload(
+                                        localFilePath, 
+                                        'http://${appState.httpHost}:9178'
+                                      );
+                                      
+                                      if (uploadResult == 0) {
+                                        uploadedCount++;
+                                      } else {
+                                        syncSuccess = false;
+                                        break;
+                                      }
+                                    }
+                                    
+                                    if (syncSuccess) {
+                                      _showMessage(context, '同步完成！已上传 $uploadedCount 个文件');
+                                    } else {
+                                      _showMessage(context, '同步过程中出现错误');
+                                    }
+                                  } catch (e) {
+                                    _showMessage(context, '同步出错: $e');
+                                  }
+                                },
                           child: const Text('开始同步到服务器'),
                         ),
                       ),
                       const SizedBox(height: 12),
 
-                      PasswordBox(
-                        placeholder: '请输入访问令牌',
-                        onChanged: (value) => appState.httpToken = value,
-                      ),
-                      
-                      const SizedBox(height: 16),
-
-                      if (!isServerMode) ...[
-                        SizedBox(
-                          width: double.infinity,
-                          child: Button(
-                            onPressed: () async {
-                              try {
-                                _showMessage(context, '正在搜索局域网中的服务器...');
-                                
-                                final servers = await synaesthesiaDart.discoverServers();
-                                
-                                if (servers.isEmpty) {
-                                  _showMessage(context, '未找到局域网中的服务器');
-                                } else {
-                                  _showServerDiscoveryDialog(context, servers);
-                                }
-                              } catch (e) {
-                                _showMessage(context, '服务器发现失败: $e');
+                      SizedBox(
+                        width: double.infinity,
+                        child: Button(
+                          onPressed: () async {
+                            try {
+                              _showMessage(context, '正在搜索局域网中的服务器...');
+                              
+                              final servers = await synaesthesiaDart.discoverServers();
+                              
+                              if (servers.isEmpty) {
+                                _showMessage(context, '未找到局域网中的服务器');
+                              } else {
+                                _showServerDiscoveryDialog(context, servers);
                               }
-                            },
-                            child: const Text('发现局域网服务器'),
-                          ),
+                            } catch (e) {
+                              _showMessage(context, '服务器发现失败: $e');
+                            }
+                          },
+                          child: const Text('发现局域网服务器'),
                         ),
-                        const SizedBox(height: 12),
-                      ],
+                      ),
                     ],
                   ),
                 ),
@@ -570,22 +688,26 @@ class _SyncPageState extends State<SyncPage> {
                       SizedBox(
                         width: double.infinity,
                         child: Button(
-                          onPressed: () async {
-                            try {
-                              final result = await synaesthesiaDart.synaCompareChanges(
-                                'http://${appState.httpHost}:9178', 
-                                appState.httpToken
-                              );
+                          onPressed: (appState.watchPath.isEmpty || 
+                                     appState.httpHost.isEmpty || 
+                                     appState.httpHost == 'localhost')
+                              ? null
+                              : () async {
+                                  try {
+                                    final result = await synaesthesiaDart.synaCompareChanges(
+                                      'http://${appState.httpHost}:9178', 
+                                      ''
+                                    );
 
-                              if (result['status'] == 'success') {
-                                _showComparisonResultDialog(context, result);
-                              } else {
-                                _showMessage(context, '比较失败: ${result['error']}');
-                              }
-                            } catch (e) {
-                              _showMessage(context, '比较出错: $e');
-                            }
-                          },
+                                    if (result['status'] == 'success') {
+                                      _showComparisonResultDialog(context, result);
+                                    } else {
+                                      _showMessage(context, '比较失败: ${result['error']}');
+                                    }
+                                  } catch (e) {
+                                    _showMessage(context, '比较出错: $e');
+                                  }
+                                },
                           child: const Text('比较本地与远程文件'),
                         ),
                       ),
@@ -854,55 +976,62 @@ void _showServerDiscoveryDialog(BuildContext context, List<Map<String, dynamic>>
         content: SizedBox(
           width: double.maxFinite,
           height: 300,
-          child: ListView.builder(
-            itemCount: servers.length,
-            itemBuilder: (context, index) {
-              final server = servers[index];
-              return Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Row(
-                    children: [
-                      Icon(FluentIcons.home),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+          child: servers.isEmpty
+              ? const Center(child: Text('未发现服务器'))
+              : ListView.builder(
+                  itemCount: servers.length,
+                  itemBuilder: (context, index) {
+                    final server = servers[index];
+                    final host = server['host'] as String? ?? '';
+                    final port = server['port'] as int? ?? 9178;
+                    final name = server['name'] as String? ?? 'Unknown';
+                    final ips = server['ips'] as List? ?? [];
+                    final displayIp = ips.isNotEmpty ? ips.first : host;
+                    
+                    return Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Row(
                           children: [
-                            Text('${server['host']}:${server['port']}'),
-                            Text('IP: ${server['address']}'),
-                          ],
-                        ),
-                      ),
-                      Button(
-                        onPressed: () {
-                          final appState = context.read<MyAppState>();
-                          appState.httpHost = server['host'].toString();
-                          Navigator.of(context).pop();
-                          
-                          // 使用ContentDialog显示消息
-                          showDialog(
-                            context: context,
-                            builder: (context) {
-                              Future.delayed(const Duration(seconds: 2), () {
-                                Navigator.of(context).pop();
-                              });
-                              return ContentDialog(
-                                title: const Text('提示'),
-                                content: Text('已选择服务器: ${server['host']}:${server['port']}'),
-                                actions: [
-                                  Button(
-                                    onPressed: () => Navigator.of(context).pop(),
-                                    child: const Text('确定'),
-                                  ),
+                            const Icon(FluentIcons.server),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                  Text('地址: $displayIp:$port'),
                                 ],
-                              );
-                            },
-                          );
-                        },
-                        child: const Text('选择'),
-                      ),
-                    ],
+                              ),
+                            ),
+                            Button(
+                              onPressed: () {
+                                final appState = context.read<MyAppState>();
+                                appState.httpHost = displayIp;
+                                Navigator.of(context).pop();
+                                
+                                showDialog(
+                                  context: context,
+                                  builder: (context) {
+                                    Future.delayed(const Duration(seconds: 2), () {
+                                      Navigator.of(context).pop();
+                                    });
+                                    return ContentDialog(
+                                      title: const Text('提示'),
+                                      content: Text('已选择服务器: $displayIp:$port'),
+                                      actions: [
+                                        Button(
+                                          onPressed: () => Navigator.of(context).pop(),
+                                          child: const Text('确定'),
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                );
+                              },
+                              child: const Text('选择'),
+                            ),
+                          ],
                   ),
                 ),
               );
