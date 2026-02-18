@@ -54,6 +54,9 @@ class SynaesthesiaDart {
   Timer? _broadcastTimer;
   String? _localIp;
 
+  // Public getter to check if server is running
+  bool get isServerRunning => _isServerRunning;
+
   Future<String> _getAppConfigDir() async {
     final appDir = await getApplicationDocumentsDirectory();
     final configDir = Directory(path.join(appDir.path, '.synaesthesia'));
@@ -470,6 +473,7 @@ class SynaesthesiaDart {
     }
   }
 
+  // Public method to sanitize path for testing
   String _sanitizePath(String pathStr) {
     var safePath = pathStr.replaceAll('../', '').replaceAll('..\\', '');
     if (safePath.startsWith('/')) {
@@ -480,6 +484,9 @@ class SynaesthesiaDart {
     }
     return safePath;
   }
+
+  // Public wrapper for testing
+  String sanitizePathForTesting(String pathStr) => _sanitizePath(pathStr);
 
   Future<int> synaStopHttpServer() async {
     if (_httpServer != null) {
