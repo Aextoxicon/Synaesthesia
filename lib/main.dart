@@ -649,19 +649,7 @@ class _SyncPageState extends State<SyncPage> {
                         width: double.infinity,
                         child: Button(
                           onPressed: () async {
-                            try {
-                              _showMessage(context, '正在搜索局域网中的服务器...');
-                              
-                              final servers = await synaesthesiaDart.discoverServers();
-                              
-                              if (servers.isEmpty) {
-                                _showMessage(context, '未找到局域网中的服务器');
-                              } else {
-                                _showServerDiscoveryDialog(context, servers);
-                              }
-                            } catch (e) {
-                              _showMessage(context, '服务器发现失败: $e');
-                            }
+                            _showServerDiscoveryDialog(context);
                           },
                           child: const Text('发现局域网服务器'),
                         ),
@@ -969,83 +957,159 @@ class _UploadProgressDialogState extends State<UploadProgressDialog> {
   }
 }
 
-void _showServerDiscoveryDialog(BuildContext context, List<Map<String, dynamic>> servers) {
+void _showServerDiscoveryDialog(BuildContext context) {
+  final servers = <Map<String, dynamic>>[];
+  var progress = 0.0;
+  var currentIp = '';
+  var isScanning = true;
+  StreamSubscription? subscription;
+  
   showDialog(
     context: context,
-    builder: (context) {
-      return ContentDialog(
-        title: const Text('发现的服务器'),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 300,
-          child: servers.isEmpty
-              ? const Center(child: Text('未发现服务器'))
-              : ListView.builder(
-                  itemCount: servers.length,
-                  itemBuilder: (context, index) {
-                    final server = servers[index];
-                    final host = server['host'] as String? ?? '';
-                    final port = server['port'] as int? ?? 9178;
-                    final name = server['name'] as String? ?? 'Unknown';
-                    final ips = server['ips'] as List? ?? [];
-                    final displayIp = ips.isNotEmpty ? ips.first : host;
-                    
-                    return Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(8.0),
-                        child: Row(
-                          children: [
-                            const Icon(FluentIcons.server),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                  Text('地址: $displayIp:$port'),
-                                ],
-                              ),
-                            ),
-                            Button(
-                              onPressed: () {
-                                final appState = context.read<MyAppState>();
-                                appState.httpHost = displayIp;
-                                Navigator.of(context).pop();
-                                
-                                showDialog(
-                                  context: context,
-                                  builder: (context) {
-                                    Future.delayed(const Duration(seconds: 2), () {
-                                      Navigator.of(context).pop();
-                                    });
-                                    return ContentDialog(
-                                      title: const Text('提示'),
-                                      content: Text('已选择服务器: $displayIp:$port'),
-                                      actions: [
-                                        Button(
-                                          onPressed: () => Navigator.of(context).pop(),
-                                          child: const Text('确定'),
-                                        ),
-                                      ],
-                                    );
-                                  },
-                                );
-                              },
-                              child: const Text('选择'),
-                            ),
-                          ],
+    barrierDismissible: false,
+    builder: (dialogContext) {
+      return StatefulBuilder(
+        builder: (context, setState) {
+          // 只在初始时启动扫描
+          if (isScanning && servers.isEmpty && subscription == null) {
+            subscription = synaesthesiaDart.discoverServersStream(
+              onProgress: (current, total, ip) {
+                if (Navigator.of(dialogContext).canPop()) {
+                  setState(() {
+                    progress = current / total;
+                    currentIp = ip;
+                  });
+                }
+              },
+            ).listen(
+              (server) {
+                if (Navigator.of(dialogContext).canPop()) {
+                  setState(() {
+                    servers.add(server);
+                  });
+                }
+              },
+              onDone: () {
+                if (Navigator.of(dialogContext).canPop()) {
+                  setState(() {
+                    isScanning = false;
+                  });
+                }
+              },
+              onError: (e) {
+                if (Navigator.of(dialogContext).canPop()) {
+                  setState(() {
+                    isScanning = false;
+                  });
+                }
+              },
+            );
+          }
+          
+          return ContentDialog(
+            title: Row(
+              children: [
+                const Text('发现服务器'),
+                const Spacer(),
+                if (isScanning)
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: ProgressRing(strokeWidth: 2),
                   ),
-                ),
-              );
-            },
-          ),
-        ),
-        actions: [
-          Button(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('关闭'),
-          ),
-        ],
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 350,
+              child: Column(
+                children: [
+                  if (isScanning) ...[
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8.0),
+                      child: Column(
+                        children: [
+                          ProgressBar(value: progress * 100),
+                          const SizedBox(height: 8),
+                          Text(
+                            '正在扫描: $currentIp',
+                            style: TextStyle(color: Colors.grey[100], fontSize: 12),
+                          ),
+                          Text(
+                            '已发现 ${servers.length} 个服务器',
+                            style: TextStyle(color: Colors.grey[100], fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(),
+                  ],
+                  Expanded(
+                    child: servers.isEmpty
+                        ? Center(
+                            child: isScanning
+                                ? const Text('正在扫描局域网...')
+                                : const Text('未发现服务器'),
+                          )
+                        : ListView.builder(
+                            itemCount: servers.length,
+                            itemBuilder: (context, index) {
+                              final server = servers[index];
+                              final host = server['host'] as String? ?? '';
+                              final port = server['port'] as int? ?? 9178;
+                              final name = server['name'] as String? ?? 'Unknown';
+                              final ips = server['ips'] as List? ?? [];
+                              final displayIp = ips.isNotEmpty ? ips.first : host;
+                              
+                              return Card(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(8.0),
+                                  child: Row(
+                                    children: [
+                                      const Icon(FluentIcons.server),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                            Text('地址: $displayIp:$port'),
+                                          ],
+                                        ),
+                                      ),
+                                      Button(
+                                        onPressed: () {
+                                          // 关闭订阅
+                                          subscription?.cancel();
+                                          
+                                          final appState = context.read<MyAppState>();
+                                          appState.httpHost = displayIp;
+                                          Navigator.of(dialogContext).pop();
+                                        },
+                                        child: const Text('选择'),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              Button(
+                onPressed: () {
+                  // 取消订阅
+                  subscription?.cancel();
+                  Navigator.of(dialogContext).pop();
+                },
+                child: Text(isScanning ? '停止扫描' : '关闭'),
+              ),
+            ],
+          );
+        },
       );
     },
   );

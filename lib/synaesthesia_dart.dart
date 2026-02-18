@@ -2,11 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
-import 'package:nsd/nsd.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
-
-const String SERVICE_TYPE = '_synaesthesia._tcp';
 
 class FileState {
   final String name;
@@ -47,8 +44,6 @@ class SynaesthesiaDart {
   bool useToken = false;
   HttpServer? _httpServer;
   bool _isServerRunning = false;
-  
-  Registration? _mdnsRegistration;
   String? _localIp;
 
   bool get isServerRunning => _isServerRunning;
@@ -71,114 +66,231 @@ class SynaesthesiaDart {
     if (_localIp != null) {
       return _localIp!;
     }
-    
+
     try {
       final interfaces = await NetworkInterface.list(
         type: InternetAddressType.IPv4,
         includeLoopback: false,
       );
       
+      final virtualInterfaceNames = [
+        'Clash', 'Clash Core', 'clash',
+        'WSL', 'wsl', 'vEthernet',
+        'Hyper-V', 'HyperV',
+        'VPN', 'vpn', 'Tun', 'tun',
+        'Loopback', 'loopback',
+        'Bluetooth', 'bluetooth',
+        'rmnet', 'pdp', 'v4-rtnet',
+      ];
+      
+      final virtualIpPrefixes = [
+        '198.18.', '198.19.',
+        '169.254.',
+        '127.', '0.',
+      ];
+      
+      bool isVirtualInterface(String name) {
+        final lowerName = name.toLowerCase();
+        return virtualInterfaceNames.any((v) => lowerName.contains(v.toLowerCase()));
+      }
+      
+      bool isVirtualIp(String ip) {
+        return virtualIpPrefixes.any((prefix) => ip.startsWith(prefix));
+      }
+      
+      // 优先选择 WiFi 相关接口
+      final wifiInterfaceNames = [
+        'wlan', 'wifi', 'wlp', 'eth', 'en', 'wl',
+      ];
+      
+      // 先尝试 WiFi 接口
       for (final interface in interfaces) {
-        for (final addr in interface.addresses) {
-          if (addr.type == InternetAddressType.IPv4) {
-            final ip = addr.address;
-            if (!ip.startsWith('127.') && 
-                !ip.startsWith('0.') && 
-                !ip.startsWith('169.254.')) {
-              _localIp = ip;
-              return ip;
+        final lowerName = interface.name.toLowerCase();
+        if (wifiInterfaceNames.any((wifiName) => lowerName.startsWith(wifiName)) &&
+            !isVirtualInterface(interface.name)) {
+          
+          for (final addr in interface.addresses) {
+            if (addr.type == InternetAddressType.IPv4) {
+              final ip = addr.address;
+              if (!isVirtualIp(ip)) {
+                _localIp = ip;
+                print('Selected WiFi interface: ${interface.name} ($ip)');
+                return ip;
+              }
             }
           }
         }
       }
+      
+      // 如果没有找到 WiFi 接口，则选择第一个非虚拟接口
+      for (final interface in interfaces) {
+        if (isVirtualInterface(interface.name)) {
+          print('Skipping virtual interface: ${interface.name}');
+          continue;
+        }
+        
+        for (final addr in interface.addresses) {
+          if (addr.type == InternetAddressType.IPv4) {
+            final ip = addr.address;
+            if (isVirtualIp(ip)) {
+              print('Skipping virtual IP: $ip on ${interface.name}');
+              continue;
+            }
+            
+            _localIp = ip;
+            print('Selected network interface: ${interface.name} ($ip)');
+            return ip;
+          }
+        }
+      }
+      
+      print('No suitable network interface found, using localhost');
+      _localIp = 'localhost';
+      return 'localhost';
     } catch (e) {
       print('Failed to get local IP address: $e');
+      _localIp = 'localhost';
+      return 'localhost';
     }
-    _localIp = 'localhost';
-    return 'localhost';
   }
 
-  Future<void> _startMdnsBroadcast() async {
-    if (_mdnsRegistration != null) {
-      return;
-    }
-
+  Stream<Map<String, dynamic>> discoverServersStream({
+    Duration timeout = const Duration(seconds: 5),
+    void Function(int current, int total, String currentIp)? onProgress,
+  }) async* {
     try {
       final localIp = await _getLocalIp();
-      _mdnsRegistration = await register(
-        Service(
-          name: 'Synaesthesia-$localIp',
-          type: SERVICE_TYPE,
-          port: port,
-        ),
-      );
-      print('mDNS service registered: Synaesthesia on port $port');
+      print('Starting subnet scan for Synaesthesia servers...');
+      print('Local IP: $localIp');
+      
+      final parts = localIp.split('.');
+      if (parts.length != 4) {
+        print('Invalid local IP format');
+        return;
+      }
+      
+      final subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+      final currentHost = int.parse(parts[3]);
+      
+      final dio = Dio();
+      dio.options.connectTimeout = const Duration(milliseconds: 500);
+      dio.options.receiveTimeout = const Duration(milliseconds: 500);
+      
+      final totalIps = 254;
+      var checked = 0;
+      
+      final controller = StreamController<Map<String, dynamic>>();
+      
+      for (int i = 1; i < 255; i++) {
+        if (i == currentHost) continue;
+        
+        final ip = '$subnet.$i';
+        _checkServerAsync(dio, ip, port).then((result) {
+          checked++;
+          onProgress?.call(checked, totalIps, ip);
+          
+          if (result != null) {
+            controller.add(result);
+            print('Found server: ${result['name']} at ${result['host']}:${result['port']}');
+          }
+          
+          if (checked >= totalIps - 1) {
+            controller.close();
+          }
+        });
+      }
+      
+      await for (final server in controller.stream) {
+        yield server;
+      }
+      
+      print('Subnet scan completed');
     } catch (e) {
-      print('Failed to register mDNS service: $e');
+      print('Subnet scan error: $e');
     }
   }
 
-  Future<void> _stopMdnsBroadcast() async {
-    if (_mdnsRegistration != null) {
-      await unregister(_mdnsRegistration!);
-      _mdnsRegistration = null;
-      print('mDNS service unregistered');
+  Future<Map<String, dynamic>?> _checkServerAsync(Dio dio, String ip, int port) async {
+    try {
+      final response = await dio.get('http://$ip:$port/ping');
+      if (response.statusCode == 200 && response.data['status'] == 'ok') {
+        return {
+          'host': ip,
+          'port': port,
+          'name': response.data['name'] ?? 'Synaesthesia-$ip',
+          'ips': [ip],
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+        };
+      }
+    } catch (e) {
+      // Server not available, ignore
     }
+    return null;
   }
 
-  Future<List<Map<String, dynamic>>> discoverServers({Duration timeout = const Duration(seconds: 8)}) async {
+  Future<List<Map<String, dynamic>>> discoverServers({Duration timeout = const Duration(seconds: 5)}) async {
     final servers = <Map<String, dynamic>>[];
     
     try {
-      print('Starting mDNS discovery for $SERVICE_TYPE...');
-      final discovery = await startDiscovery(
-        SERVICE_TYPE, 
-        ipLookupType: IpLookupType.v4,
-      );
-      final completer = Completer<List<Map<String, dynamic>>>();
+      final localIp = await _getLocalIp();
+      print('Starting subnet scan for Synaesthesia servers...');
+      print('Local IP: $localIp');
       
-      discovery.addServiceListener((service, status) async {
-        print('Service listener: ${service.name} - $status');
+      final parts = localIp.split('.');
+      if (parts.length != 4) {
+        print('Invalid local IP format');
+        return servers;
+      }
+      
+      final subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+      final currentHost = int.parse(parts[3]);
+      
+      final dio = Dio();
+      dio.options.connectTimeout = const Duration(milliseconds: 500);
+      dio.options.receiveTimeout = const Duration(milliseconds: 500);
+      
+      final futures = <Future<Map<String, dynamic>?>>[];
+      
+      for (int i = 1; i < 255; i++) {
+        if (i == currentHost) continue;
         
-        if (status == ServiceStatus.found) {
-          try {
-            final resolved = await resolve(service);
-            if (resolved != null) {
-              final host = resolved.host ?? '';
-              final port = resolved.port ?? 9178;
-              final ips = resolved.host != null ? [resolved.host!] : [];
-              if (resolved.host != null) {
-                ips.addAll(resolved.host!.split(','));
-              }
-              if (host.isNotEmpty || ips.isNotEmpty) {
-                servers.add({
-                  'host': host,
-                  'port': port,
-                  'name': resolved.name,
-                  'ips': ips,
-                  'timestamp': DateTime.now().millisecondsSinceEpoch,
-                });
-                print('Resolved service: ${resolved.name} at $host:$port (IPs: $ips)');
-              }
-            }
-          } catch (e) {
-            print('Failed to resolve service ${service.name}: $e');
-          }
-        }
-      });
+        final ip = '$subnet.$i';
+        futures.add(_checkServer(dio, ip, port));
+      }
       
-      Future.delayed(timeout, () async {
-        await stopDiscovery(discovery);
-        if (!completer.isCompleted) {
-          completer.complete(servers);
-        }
-      });
+      final results = await Future.wait(futures);
       
-      return await completer.future;
+      for (final result in results) {
+        if (result != null) {
+          servers.add(result);
+          print('Found server: ${result['name']} at ${result['host']}:${result['port']}');
+        }
+      }
+      
+      print('Subnet scan completed, found ${servers.length} servers');
     } catch (e) {
-      print('mDNS discovery error: $e');
-      return servers;
+      print('Subnet scan error: $e');
     }
+    
+    return servers;
+  }
+
+  Future<Map<String, dynamic>?> _checkServer(Dio dio, String ip, int port) async {
+    try {
+      final response = await dio.get('http://$ip:$port/ping');
+      if (response.statusCode == 200 && response.data['status'] == 'ok') {
+        return {
+          'host': ip,
+          'port': port,
+          'name': response.data['name'] ?? 'Synaesthesia-$ip',
+          'ips': [ip],
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+        };
+      }
+    } catch (e) {
+      // Server not available, ignore
+    }
+    return null;
   }
 
   Future<int> synaInit(String? uploadDirOverride) async {
@@ -292,8 +404,6 @@ class SynaesthesiaDart {
       _httpServer = await HttpServer.bind(InternetAddress.anyIPv4, port);
       _isServerRunning = true;
 
-      await _startMdnsBroadcast();
-
       _httpServer!.listen((request) async {
         try {
           if (useToken && apiToken != null) {
@@ -314,6 +424,8 @@ class SynaesthesiaDart {
             await _handleUpload(request);
           } else if (request.method == 'GET' && request.uri.path == '/list') {
             await _handleList(request);
+          } else if (request.method == 'GET' && request.uri.path == '/ping') {
+            await _handlePing(request);
           } else if (request.method == 'GET' && request.uri.path.startsWith('/download/')) {
             await _handleDownload(request);
           } else {
@@ -389,6 +501,30 @@ class SynaesthesiaDart {
     }
   }
 
+  Future<void> _handlePing(HttpRequest request) async {
+    try {
+      final localIp = await _getLocalIp();
+      final response = {
+        'status': 'ok',
+        'name': 'Synaesthesia-$localIp',
+        'port': port,
+        'host': localIp,
+      };
+
+      request.response
+        ..statusCode = 200
+        ..headers.contentType = ContentType.json
+        ..write(json.encode(response));
+      await request.response.close();
+    } catch (e) {
+      request.response
+        ..statusCode = 500
+        ..headers.contentType = ContentType.json
+        ..write(json.encode({'error': 'ping failed', 'status': 'error'}));
+      await request.response.close();
+    }
+  }
+
   Future<void> _handleDownload(HttpRequest request) async {
     try {
       final requestPath = request.uri.path.substring('/download/'.length);
@@ -454,8 +590,6 @@ class SynaesthesiaDart {
       await _httpServer!.close();
       _httpServer = null;
       _isServerRunning = false;
-      
-      await _stopMdnsBroadcast();
     }
     return 0;
   }
