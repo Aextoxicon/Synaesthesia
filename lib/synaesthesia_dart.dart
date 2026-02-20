@@ -192,6 +192,7 @@ class SynaesthesiaDart {
           if (result != null) {
             controller.add(result);
             print('Found server: ${result['name']} at ${result['host']}:${result['port']}');
+            
           }
           
           if (checked >= totalIps - 1) {
