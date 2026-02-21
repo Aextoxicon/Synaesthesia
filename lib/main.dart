@@ -240,6 +240,7 @@ class MyAppState extends ChangeNotifier {
 
   String httpHost = 'localhost';
   int httpPortC = 8080;
+  String httpToken = '';
 
   MyAppState() {
     _currentIdx = _syncMode == SyncMode.server ? 0 : 1;
@@ -250,6 +251,7 @@ class MyAppState extends ChangeNotifier {
     final config = await synaesthesiaDart.loadConfig();
     if (config != null) {
       watchPath = config['uploadDir'] as String? ?? '';
+      httpToken = config['apiToken'] as String? ?? '';
       notifyListeners();
     }
   }
@@ -268,7 +270,8 @@ class MyAppState extends ChangeNotifier {
     }
     lastEvent = event;
     notifyListeners();
-  }}
+  }
+}
 
 class SyncPage extends StatefulWidget {
   final int selectedTab;
