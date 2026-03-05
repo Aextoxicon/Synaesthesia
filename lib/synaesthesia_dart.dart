@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart' show DefaultHttpClientAdapter, IOHttpClientAdapter;
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
@@ -173,8 +174,12 @@ class SynaesthesiaDart {
       final currentHost = int.parse(parts[3]);
       
       final dio = Dio();
-      dio.options.connectTimeout = const Duration(milliseconds: 500);
-      dio.options.receiveTimeout = const Duration(milliseconds: 500);
+      dio.options.connectTimeout = const Duration(milliseconds: 1500);
+      dio.options.receiveTimeout = const Duration(milliseconds: 1500);
+      (dio.httpClientAdapter as IOHttpClientAdapter).onHttpClientCreate = (client) {
+        client.idleTimeout = Duration(milliseconds: 500);
+        client.maxConnectionsPerHost = 1;
+      };
       
       final totalIps = 254;
       var checked = 0;
@@ -247,8 +252,8 @@ class SynaesthesiaDart {
       final currentHost = int.parse(parts[3]);
       
       final dio = Dio();
-      dio.options.connectTimeout = const Duration(milliseconds: 500);
-      dio.options.receiveTimeout = const Duration(milliseconds: 500);
+      dio.options.connectTimeout = const Duration(milliseconds: 1500);
+      dio.options.receiveTimeout = const Duration(milliseconds: 1500);
       
       final futures = <Future<Map<String, dynamic>?>>[];
       
@@ -451,18 +456,90 @@ class SynaesthesiaDart {
 
   Future<void> _handleUpload(HttpRequest request) async {
     try {
-      final body = await utf8.decoder.bind(request).join();
+      // 使用MultipartFormatter来处理multipart/form-data
+      final boundary = request.headers.contentType?.parameters['boundary'];
+      if (boundary == null) {
+        request.response
+          ..statusCode = 400
+          ..headers.contentType = ContentType.json
+          ..write(json.encode({'error': 'Missing boundary in content-type'}));
+        await request.response.close();
+        return;
+      }
+
+      final transformer = MimeMultipartTransformer(boundary);
+      final parts = request.listen((data) => data).transform(transformer);
+
+      String? fileName;
+      String? subPath = '';
+      File? tempFile;
       
-      request.response
-        ..statusCode = 200
-        ..headers.contentType = ContentType.json
-        ..write(json.encode({'message': '上传成功'}));
+      await for (final part in parts) {
+        final disposition = part.headers['content-disposition'];
+        if (disposition != null) {
+          if (part.isBinary) {
+            // 解析文件上传部分
+            final contentDisposition = HttpHeaders.parse((disposition));
+            fileName = _extractFilename(contentDisposition.parameters['filename'].toString());
+            
+            // 获取子路径（如果有的话）
+            final filePathParam = contentDisposition.parameters['filepath'];
+            if (filePathParam != null) {
+              subPath = _sanitizePath(filePathParam.toString());
+            }
+            
+            // 创建目标文件
+            String targetPath;
+            if (subPath.isNotEmpty && subPath != '.') {
+              // 如果指定了子路径，合并基础目录和子路径
+              targetPath = path.join(uploadDir!, subPath);
+              final targetDir = Directory(path.dirname(targetPath));
+              if (!await targetDir.exists()) {
+                await targetDir.create(recursive: true);
+              }
+            } else {
+              // 否则直接在上传目录下
+              targetPath = path.join(uploadDir!, fileName!);
+            }
+            
+            final file = File(targetPath);
+            await file.create(recursive: true);
+            await file.openWrite().addStream(part.cast<List<int>>());
+          } else {
+            // 检查是否有子路径参数
+            if (disposition.contains('name="subpath"')) {
+              final subPathValue = await part.transform(Utf8Decoder()).join();
+              if (subPathValue.isNotEmpty) {
+                subPath = _sanitizePath(subPathValue);
+              }
+            }
+          }
+        }
+      }
+
+      if (fileName != null) {
+        request.response
+          ..statusCode = 200
+          ..headers.contentType = ContentType.json
+          ..write(json.encode({
+            'message': '上传成功',
+            'filename': fileName,
+            'path': subPath.isNotEmpty ? path.join(subPath, fileName) : fileName
+          }));
+      } else {
+        request.response
+          ..statusCode = 400
+          ..headers.contentType = ContentType.json
+          ..write(json.encode({'error': 'No file received'}));
+      }
+      
       await request.response.close();
     } catch (e) {
+      print('Handle upload error: $e');
       request.response
         ..statusCode = 500
         ..headers.contentType = ContentType.json
-        ..write(json.encode({'error': '保存文件失败'}));
+        ..write(json.encode({'error': '上传文件失败', 'details': e.toString()}));
       await request.response.close();
     }
   }
@@ -612,7 +689,7 @@ class SynaesthesiaDart {
     }
   }
 
-  Future<int> synaUpload(String filePath, String uploadHost) async {
+  Future<int> synaUpload(String filePath, String uploadHost, {String? subPath}) async {
     try {
       final file = File(filePath);
       if (!await file.exists()) {
@@ -620,9 +697,16 @@ class SynaesthesiaDart {
       }
 
       final dio = Dio();
-      final formData = FormData.fromMap({
+      final formMap = <String, dynamic>{
         'file': await MultipartFile.fromFile(filePath, filename: path.basename(filePath)),
-      });
+      };
+      
+      // 如果提供了子路径，添加到FormData中
+      if (subPath != null && subPath.isNotEmpty) {
+        formMap['subpath'] = subPath;
+      }
+      
+      final formData = FormData.fromMap(formMap);
 
       final options = Options(
         method: 'POST',
